@@ -46,7 +46,7 @@ N_INTERIOR = 8000 # Standard sampling for speed
 N_BOUNDARY = 2000
 
 # Model Architecture
-HIDDEN_LAYERS = 5
+HIDDEN_LAYERS = 3
 HIDDEN_UNITS = 64
 
 # Fourier Features
