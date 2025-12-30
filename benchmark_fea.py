@@ -110,7 +110,7 @@ def solve_fea():
     # 2. Stiffness Matrix Assembly
     print("Computing Element Stiffness Matrices...")
     # Materials
-    E_base, nu_base = 1.0, 0.3
+    E_base, nu_base = 360.0, 0.3
     
     # Precompute Ke for base material (assuming valid for all)
     # Actually, if layers have same E,nu we only need one Ke.
