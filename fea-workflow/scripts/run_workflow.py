@@ -46,9 +46,21 @@ def get_cfg_from_pinn_config():
 
 def main():
     print("=== Phase 1: Training PINN via pinn-workflow ===")
+    
+    # Define Callback for Visualization
+    cfg = get_cfg_from_pinn_config()
+    def visualization_callback(tag, model, device):
+        print(f"Creating visualization for {tag}...")
+        save_path = os.path.dirname(__file__)
+        plot_pinn_results(model, cfg, device, save_path=save_path)
+        # Rename so we don't overwrite
+        os.rename(os.path.join(save_path, "pinn_top.png"), 
+                  os.path.join(save_path, f"pinn_top_{tag}.png"))
+        print(f"Saved pinn_top_{tag}.png")
+
     # Call the external training script
     # This will use pinn-workflow/config.py
-    pinn_model = pinn_train.train()
+    pinn_model = pinn_train.train(callback=visualization_callback)
     
     # Plot Loss History
     try:

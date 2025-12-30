@@ -11,7 +11,7 @@ import model
 import physics
 import matplotlib.pyplot as plt
 
-def train():
+def train(callback=None):
     if torch.cuda.is_available():
         device = torch.device('cuda')
     elif torch.backends.mps.is_available():
@@ -58,6 +58,10 @@ def train():
                   f"Load: {losses['load']:.6f} | Interface: {losses['interface']:.6f} | "
                   f"Time: {step_duration:.4f}s")
             
+        # Visualization Callback (Every 500 epochs)
+        if callback and epoch % 500 == 0:
+            callback(f"adam_epoch_{epoch}", pinn, device)
+            
     print(f"Adam Training Complete. Total Time: {time.time() - start_time:.2f}s")
     
     # L-BFGS Training
@@ -84,6 +88,10 @@ def train():
         
         # Print every step to see progress since total steps is small (5)
         print(f"L-BFGS Step {i}: Loss: {loss_val.item():.6f} | Time: {step_end - step_start:.4f}s")
+        
+        # Visualization Callback (Every 10 steps)
+        if callback and i % 10 == 0:
+            callback(f"lbfgs_step_{i}", pinn, device)
             
     # Save Model
     torch.save(pinn.state_dict(), "pinn_model.pth")

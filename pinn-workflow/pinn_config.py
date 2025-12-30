@@ -16,7 +16,7 @@ Layer_Interfaces = [0.0, H/3, 2*H/3, H]
 # --- Material Properties ---
 # Young's Modulus (E) and Poisson's Ratio (nu)
 # Can be different per layer
-E_vals = [1.0, 1.0, 1.0] # Normalized
+E_vals = [360.0, 360.0, 360.0] # Match FEA material
 nu_vals = [0.3, 0.3, 0.3]
 
 def get_lame_params(E, nu):
@@ -46,3 +46,5 @@ N_BOUNDARY = 500  # Per face type
 # Fourier Features
 FOURIER_DIM = 64 # Number of Fourier frequencies
 FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
+OUTPUT_SCALE = 100.0 # Scale up output as requested
+```
