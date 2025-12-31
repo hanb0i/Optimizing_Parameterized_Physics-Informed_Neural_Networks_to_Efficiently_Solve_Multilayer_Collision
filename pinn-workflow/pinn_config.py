@@ -26,6 +26,10 @@ Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 # --- Loading ---
 p0 = 1.0 # Load magnitude
 
+# Load patch boundaries (normalized coordinates)
+LOAD_PATCH_X = [Lx/3, 2*Lx/3]  # [0.333, 0.667]
+LOAD_PATCH_Y = [Ly/3, 2*Ly/3]  # [0.333, 0.667]
+
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
 EPOCHS_ADAM = 2000 # Increased to enforce load and reduce underfit

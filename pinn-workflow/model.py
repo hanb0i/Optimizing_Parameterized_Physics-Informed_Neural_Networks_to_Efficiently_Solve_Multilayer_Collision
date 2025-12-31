@@ -59,7 +59,11 @@ class LayerNet(nn.Module):
                 
     def forward(self, x):
         # x shape: (N, 3)
-        u_raw = self.net(x)
+        # Scale z coordinate by 10 to match x,y range [0,1]
+        # Use torch.cat to preserve gradient flow (avoid in-place operations)
+        x_scaled = torch.cat([x[:, 0:1], x[:, 1:2], x[:, 2:3] * 10.0], dim=1)
+        
+        u_raw = self.net(x_scaled)
         
         # Hard Constraint for Clamped Sides (x=0, x=1, y=0, y=1)
         # Mask M(x,y) = x(1-x)y(1-y)

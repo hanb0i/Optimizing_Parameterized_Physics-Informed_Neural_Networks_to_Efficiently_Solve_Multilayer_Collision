@@ -7,9 +7,9 @@ import time
 def solve_fem(cfg):
     print("Initializing FEA Solver...")
     Lx, Ly, H = cfg['geometry']['Lx'], cfg['geometry']['Ly'], cfg['geometry']['H']
-    ne_x = 30
-    ne_y = 30
-    ne_z = 10 # Could read from mesh settings if populated
+    ne_x = 30  # Doubled from 30
+    ne_y = 30  # Doubled from 30
+    ne_z = 10  # Doubled from 10
     
     dx, dy, dz = Lx/ne_x, Ly/ne_y, H/ne_z
     nx, ny, nz = ne_x+1, ne_y+1, ne_z+1
@@ -96,12 +96,30 @@ def solve_fem(cfg):
     patch_y_min = cfg['load_patch']['y_start'] * Ly
     patch_y_max = cfg['load_patch']['y_end'] * Ly
     
+    # Soft edge load mask function (same as PINN)
+    def load_mask(x, y):
+        """
+        Quadratic falloff mask: M(x,y) = 16*x_norm(1-x_norm)*y_norm(1-y_norm)
+        Returns 1.0 at center, 0.0 at edges
+        """
+        if x < patch_x_min or x > patch_x_max or y < patch_y_min or y > patch_y_max:
+            return 0.0
+        
+        # Normalize to [0, 1] within patch
+        x_norm = (x - patch_x_min) / (patch_x_max - patch_x_min)
+        y_norm = (y - patch_y_min) / (patch_y_max - patch_y_min)
+        
+        # Quadratic falloff
+        return 16.0 * x_norm * (1.0 - x_norm) * y_norm * (1.0 - y_norm)
+    
     for j in range(ny):
         if y_nodes[j] >= patch_y_min and y_nodes[j] <= patch_y_max:
             for i in range(nx):
                 if x_nodes[i] >= patch_x_min and x_nodes[i] <= patch_x_max:
+                    # Apply soft edge mask to load
+                    mask = load_mask(x_nodes[i], y_nodes[j])
                     n_idx = i + j*nx + k*nx*ny
-                    F[3*n_idx + 2] -= p0 * dx * dy # Approximate logic
+                    F[3*n_idx + 2] -= p0 * mask * dx * dy
                     
     # BCs
     fixed_dofs = []

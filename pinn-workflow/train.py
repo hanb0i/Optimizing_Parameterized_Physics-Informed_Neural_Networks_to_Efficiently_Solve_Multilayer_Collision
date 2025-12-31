@@ -143,6 +143,7 @@ def train():
         
     num_lbfgs_steps = config.EPOCHS_LBFGS
     print(f"Running {num_lbfgs_steps} L-BFGS outer steps.")
+    print(f"Resampling with residual-based adaptive sampling each outer step.")
     
     for i in range(num_lbfgs_steps):
         # Resample collocation points with residual-based adaptive sampling
@@ -168,7 +169,7 @@ def train():
         lbfgs_history['free_bot'].append(losses['free_bot'].item())
         lbfgs_history['load'].append(losses['load'].item())
         
-        # Compute FEM error
+        # Compute FEM error and print
         if fem_available:
             with torch.no_grad():
                 u_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
@@ -178,9 +179,18 @@ def train():
                 lbfgs_history['fem_mae'].append(mae)
                 lbfgs_history['fem_max_err'].append(max_err)
                 lbfgs_history['steps'].append(i)
-            print(f"L-BFGS Step {i}: Loss: {loss_val.item():.6f} | FEM MAE: {mae:.6f} | Time: {step_end - step_start:.4f}s")
+            print(f"L-BFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
+                  f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
+                  f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
+                  f"FEM MAE: {mae:.6e} | Time: {step_end - step_start:.4f}s")
         else:
-            print(f"L-BFGS Step {i}: Loss: {loss_val.item():.6f} | Time: {step_end - step_start:.4f}s")
+            print(f"L-BFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
+                  f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
+                  f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
+                  f"Time: {step_end - step_start:.4f}s")
+        
+        # Save model at every L-BFGS step
+        torch.save(pinn.state_dict(), "pinn_model.pth")
             
     # Save Model and Loss Histories
     torch.save(pinn.state_dict(), "pinn_model.pth")
