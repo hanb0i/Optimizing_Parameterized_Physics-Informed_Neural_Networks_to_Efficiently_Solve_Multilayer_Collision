@@ -27,36 +27,24 @@ def get_lame_params(E, nu):
 Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 
 # --- Loading ---
-p0 = 0.1 # Load magnitude (Matched to FEA: 0.1)
+p0 = 0.1 # Load magnitude
 
 # --- Training Hyperparameters ---
-LEARNING_RATE = 1e-3 # Restore standard LR for Hard Constraints
-EPOCHS_ADAM = 3000 # Optimized based on convergence analysis
-EPOCHS_LBFGS = 2000 
-#Plot Physical Residuals Every N Epochs every 100 epochs. 
+LEARNING_RATE = 1e-3
+EPOCHS_ADAM = 1000 # Optimal balance (Knee point at ~200-500)
+EPOCHS_LBFGS = 1500 # Testing user's hypothesis (1000-2000 range)
 WEIGHTS = {
-<<<<<<< HEAD
-    'pde': 0.0,     # Zero physics to force deformation
-    'bc': 1.0,      
-    'load': 10000.0, # Maximum forcing
-    'interface_u': 100.0,
-    'interface_stress': 10.0 
-=======
-    'pde': 5.0,    # Increased from 1.0
-    'bc': 1.0,      # Reduced, as hard constraint handles side BCs now
-    'load': 1000.0, # Heavily increased from 100.0 to drive deformation
-    'interface_u': 100.0 
->>>>>>> 68f0fc8b05e6d073cb58b257d512c9e40abf836b
+    'pde': 1.0,    # Balanced with Load
+    'bc': 100.0,    # Strong constraint (Trial 12)
+    'load': 100.0,   # Natural Physics (Trial 12)
+    'interface_u': 100.0, # Balanced (Trial 12)
+    'interface_t': 1.0   # Matches Traction (Trial 12)
 }
 # Sampling
-N_INTERIOR = 8000 # Standard sampling for speed
-N_BOUNDARY = 2000
-
-# Model Architecture
-HIDDEN_LAYERS = 3
-HIDDEN_UNITS = 64
+N_INTERIOR = 2000 # Standard resolution (Trial 12)
+N_BOUNDARY = 2000  # Standard resolution
 
 # Fourier Features
-FOURIER_DIM = 64 
-FOURIER_SCALE = 1.5
-OUTPUT_SCALE = 0.03 # Reduced for small displacement (Target ~0.0016)
+FOURIER_DIM = 64 # Number of Fourier frequencies
+FOURIER_SCALE = 5.0 # Increased to capture sharp load edges
+OUTPUT_SCALE = 1.0 # Removed scaling to allow natural physics-driven magnitude
