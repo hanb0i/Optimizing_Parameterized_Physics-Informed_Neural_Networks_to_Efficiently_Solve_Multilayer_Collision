@@ -38,7 +38,7 @@ EPOCHS_LBFGS = 30 # Increased from 500. Resampling here. Should help convergence
 WEIGHTS = {
     'pde': 1.0,    # Increased from 1.0
     'bc': 1.0,      # Reduced, as hard constraint handles side BCs now
-    'load': 1.0, # Heavily increased to match traction target
+    'load': 10.0, # Heavily increased to match traction target
     'interface_u': 1.0 
 }
 # Sampling
