@@ -73,7 +73,7 @@ class LayerNet(nn.Module):
         
         # We assume domain is [0,1]x[0,1] based on config.
         # If config changed Lx, Ly, this should be dynamic, but for now hardcoded matches config.
-        mask = x_c * (1.0 - x_c) * y_c * (1.0 - y_c) * 16.0
+        mask = x_c * (1.0 - x_c) * y_c * (1.0 - y_c) * 4.0
         
         # Apply mask
         return u_raw * mask
