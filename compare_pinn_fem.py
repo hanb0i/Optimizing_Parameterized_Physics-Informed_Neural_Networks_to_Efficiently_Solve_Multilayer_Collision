@@ -16,7 +16,12 @@ import model
 
 def main():
     print("Loading FEA Solution...")
-    data = np.load("fea_solution.npy", allow_pickle=True).item()
+    fea_path = os.path.join(PINN_WORKFLOW_DIR, "fea_solution.npy")
+    if not os.path.exists(fea_path):
+        # Fallback to local
+        fea_path = "fea_solution.npy"
+    print(f"Loading from: {fea_path}")
+    data = np.load(fea_path, allow_pickle=True).item()
     X_fea = data["x"]
     Y_fea = data["y"]
     Z_fea = data["z"]
@@ -32,8 +37,12 @@ def main():
         device = torch.device("cpu")
 
     pinn = model.MultiLayerPINN().to(device)
+    model_path = os.path.join(PINN_WORKFLOW_DIR, "pinn_model.pth")
+    if not os.path.exists(model_path):
+        model_path = "pinn_model.pth"
+    print(f"Loading PINN from: {model_path}")
     pinn.load_state_dict(
-        torch.load("pinn_model.pth", map_location=device, weights_only=True)
+        torch.load(model_path, map_location=device, weights_only=True)
     )
     pinn.eval()
     print("PINN model loaded")

@@ -38,7 +38,7 @@ EPOCHS_LBFGS = 30 # Increased from 500. Resampling here. Should help convergence
 WEIGHTS = {
     'pde': 1.0,    # Increased from 1.0
     'bc': 1.0,      # Reduced, as hard constraint handles side BCs now
-    'load': 10.0, # Heavily increased to match traction target
+    'load': 1.0, # Heavily increased to match traction target
     'interface_u': 1.0 
 }
 # Sampling
@@ -48,3 +48,6 @@ N_BOUNDARY = 2000  # Per face type
 # Fourier Features
 FOURIER_DIM = 0 # Number of Fourier frequencies
 FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
+
+# Output Scaling
+OUTPUT_SCALE = 3.55 # Scaling factor for network output

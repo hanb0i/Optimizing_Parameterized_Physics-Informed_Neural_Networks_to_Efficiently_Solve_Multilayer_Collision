@@ -76,7 +76,7 @@ class LayerNet(nn.Module):
         mask = x_c * (1.0 - x_c) * y_c * (1.0 - y_c) * 16.0
         
         # Apply mask
-        return u_raw * mask
+        return u_raw * mask * config.OUTPUT_SCALE
 
 class MultiLayerPINN(nn.Module):
     def __init__(self):
