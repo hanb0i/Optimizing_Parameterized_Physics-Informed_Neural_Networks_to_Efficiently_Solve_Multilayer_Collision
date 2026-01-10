@@ -222,13 +222,11 @@ def pinn_style_loss(x_nodes, y_nodes, z_nodes, u_grid):
 
     # Patch mask
     X, Y = np.meshgrid(x_nodes, y_nodes, indexing="ij")
-    x_min, x_max = config.LOAD_PATCH_X
-    y_min, y_max = config.LOAD_PATCH_Y
     in_patch = (
-        (X >= x_min)
-        & (X <= x_max)
-        & (Y >= y_min)
-        & (Y <= y_max)
+        (X >= Lx / 3.0)
+        & (X <= 2.0 * Lx / 3.0)
+        & (Y >= Ly / 3.0)
+        & (Y <= 2.0 * Ly / 3.0)
     )
     target = np.zeros_like(T_top)
     target[:, :, 2] = -p0

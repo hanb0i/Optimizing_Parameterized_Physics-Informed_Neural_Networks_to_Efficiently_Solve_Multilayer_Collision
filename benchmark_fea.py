@@ -1,17 +1,7 @@
-
 import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import time
-import os
-import sys
-
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-PINN_WORKFLOW_DIR = os.path.join(REPO_ROOT, "pinn-workflow")
-if PINN_WORKFLOW_DIR not in sys.path:
-    sys.path.insert(0, PINN_WORKFLOW_DIR)
-
-import pinn_config as config
 
 def element_stiffness_matrix(E, nu, dx, dy, dz):
     """
@@ -102,7 +92,7 @@ def solve_fea():
     print("Initializing FEA Solver...")
     
     # 1. Mesh Parameters
-    Lx, Ly, H = config.Lx, config.Ly, config.H
+    Lx, Ly, H = 1.0, 1.0, 0.1
     # Resolution (Elements)
     ne_x, ne_y, ne_z = 30, 30, 10
     
@@ -119,7 +109,7 @@ def solve_fea():
     # 2. Stiffness Matrix Assembly
     print("Computing Element Stiffness Matrices...")
     # Materials
-    E_base, nu_base = config.E_vals[0], config.nu_vals[0]
+    E_base, nu_base = 1.0, 0.3
     
     # Precompute Ke for base material (assuming valid for all)
     # Actually, if layers have same E,nu we only need one Ke.
@@ -227,9 +217,9 @@ def solve_fea():
     
     # 3. Apply Loads
     # Load patch on Top Surface (z=H, k=nz-1)
-    # x in [x_min, x_max], y in [y_min, y_max]
+    # x in [Lx/3, 2Lx/3], y in [Ly/3, 2Ly/3]
     F = np.zeros(n_dof)
-    p0 = config.p0
+    p0 = 1.0
     
     # Identify Top Nodes
     # k = nz-1
@@ -246,16 +236,6 @@ def solve_fea():
     # Corner nodes get p0 * dx * dy / 4
     # Simple approximation: F_z = -p0 * dx * dy for nodes strictly inside patch
     
-    x_min, x_max = config.LOAD_PATCH_X
-    y_min, y_max = config.LOAD_PATCH_Y
-
-    def load_mask(x, y):
-        if x < x_min or x > x_max or y < y_min or y > y_max:
-            return 0.0
-        x_norm = (x - x_min) / (x_max - x_min)
-        y_norm = (y - y_min) / (y_max - y_min)
-        return 16.0 * x_norm * (1.0 - x_norm) * y_norm * (1.0 - y_norm)
-
     patch_nodes = []
     
     for j in range(ny):
@@ -263,18 +243,24 @@ def solve_fea():
         for i in range(nx):
             x = x_nodes[i]
             
-            mask = load_mask(x, y)
-            if mask <= 0.0:
-                continue
-
-            # Node index
-            n_idx = get_node_idx(i, j, nz-1) # Top surface
-
-            force = -p0 * mask * dx * dy
-
-            # F_z is dof index 3*n_idx + 2
-            F[3*n_idx + 2] += force
-            patch_nodes.append(n_idx)
+            # Check if in patch
+            # Allow boundary tolerance
+            if (x >= Lx/3 - 1e-5) and (x <= 2*Lx/3 + 1e-5) and \
+               (y >= Ly/3 - 1e-5) and (y <= 2*Ly/3 + 1e-5):
+                
+                # Node index
+                n_idx = get_node_idx(i, j, nz-1) # Top surface
+                
+                # Area weight
+                weight = 1.0
+                if abs(x - Lx/3) < 1e-5 or abs(x - 2*Lx/3) < 1e-5: weight *= 0.5
+                if abs(y - Ly/3) < 1e-5 or abs(y - 2*Ly/3) < 1e-5: weight *= 0.5
+                
+                force = -p0 * dx * dy * weight
+                
+                # F_z is dof index 3*n_idx + 2
+                F[3*n_idx + 2] += force
+                patch_nodes.append(n_idx)
                 
     print(f"Applied load to {len(patch_nodes)} nodes.")
     

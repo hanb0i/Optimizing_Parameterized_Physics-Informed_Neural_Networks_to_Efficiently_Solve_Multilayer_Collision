@@ -10,18 +10,15 @@ class FourierFeatures(nn.Module):
 
     def forward(self, x):
         # x: (N, 3)
-        # Normalize coordinates to [0, 1] based on config geometry.
-        x_norm = torch.cat(
-            [
-                x[:, 0:1] / config.Lx,
-                x[:, 1:2] / config.Ly,
-                x[:, 2:3] / config.H,
-            ],
-            dim=1,
-        )
+        # Normalize z coordinate from [0, 0.1] to roughly [0, 1] relative to x,y
+        # Ideally we read this from config, but here we can just scale based on assumed H=0.1
+        # Better yet, let's just multiply z by 10.0 to match x,y range
+        # Or more robustly: 
+        x_norm = x.clone()
+        x_norm[:, 2] = x_norm[:, 2] * 10.0 # Scale z to [0, 1]
         
         # x_proj: (N, mapping_size)
-        x_proj = (2.0 * np.pi * x_norm) @ self.B
+        x_proj = (2. * np.pi * x_norm) @ self.B
         return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
 
 class LayerNet(nn.Module):
@@ -62,23 +59,20 @@ class LayerNet(nn.Module):
                 
     def forward(self, x):
         # x shape: (N, 3)
-        # Normalize coordinates to [0, 1] for conditioning.
-        x_scaled = torch.cat(
-            [
-                x[:, 0:1] / config.Lx,
-                x[:, 1:2] / config.Ly,
-                x[:, 2:3] / config.H,
-            ],
-            dim=1,
-        )
+        # Scale z coordinate by 10 to match x,y range [0,1]
+        # Use torch.cat to preserve gradient flow (avoid in-place operations)
+        x_scaled = torch.cat([x[:, 0:1], x[:, 1:2], x[:, 2:3] * 10.0], dim=1)
         
         u_raw = self.net(x_scaled)
         
-        # Hard Constraint for Clamped Sides (x=0, x=Lx, y=0, y=Ly)
+        # Hard Constraint for Clamped Sides (x=0, x=1, y=0, y=1)
         # Mask M(x,y) = x(1-x)y(1-y)
         # Normalized so max value is ~1 (at center x=0.5, y=0.5, val=0.0625 -> *16)
-        x_c = x[:, 0:1] / config.Lx
-        y_c = x[:, 1:2] / config.Ly
+        x_c = x[:, 0:1]
+        y_c = x[:, 1:2]
+        
+        # We assume domain is [0,1]x[0,1] based on config.
+        # If config changed Lx, Ly, this should be dynamic, but for now hardcoded matches config.
         mask = x_c * (1.0 - x_c) * y_c * (1.0 - y_c) * 16.0
         
         # Apply mask

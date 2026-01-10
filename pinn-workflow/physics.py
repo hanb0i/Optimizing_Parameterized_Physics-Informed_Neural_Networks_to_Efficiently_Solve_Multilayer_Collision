@@ -4,37 +4,20 @@ import torch.autograd as autograd
 import pinn_config as config
 
 def load_mask(x):
-    """
-    Soft edge mask for load patch using quadratic function.
-    Similar to side BC mask: M(x,y) = 16*x(1-x)*y(1-y)
-    but applied to normalized coordinates within the load patch.
-    
-    For x,y ∈ [1/3, 2/3], normalize to [0,1] and apply quadratic.
-    Outside the patch, mask = 0.
-    
-    Args:
-        x: (N, 3) tensor of coordinates
-    Returns:
-        mask: (N,) tensor of mask values ∈ [0, 1]
-    """
+    """Binary mask for load patch (1 inside, 0 outside)."""
     x_coord = x[:, 0]
     y_coord = x[:, 1]
     
     x_min, x_max = config.LOAD_PATCH_X
     y_min, y_max = config.LOAD_PATCH_Y
     
-    # Normalize coordinates to [0, 1] within patch
-    x_norm = (x_coord - x_min) / (x_max - x_min)
-    y_norm = (y_coord - y_min) / (y_max - y_min)
-    
-    # Quadratic falloff: M(x,y) = 16*x(1-x)*y(1-y)
-    # This gives M=1 at center (0.5, 0.5) and M=0 at edges
-    mask = 16.0 * x_norm * (1.0 - x_norm) * y_norm * (1.0 - y_norm)
-    
-    # Clamp to ensure mask is only non-zero within patch
-    mask = torch.where((x_coord >= x_min) & (x_coord <= x_max) & 
-                       (y_coord >= y_min) & (y_coord <= y_max),
-                       mask, torch.zeros_like(mask))
+    in_patch = (
+        (x_coord >= x_min)
+        & (x_coord <= x_max)
+        & (y_coord >= y_min)
+        & (y_coord <= y_max)
+    )
+    mask = torch.where(in_patch, torch.ones_like(x_coord), torch.zeros_like(x_coord))
     
     return mask
 
@@ -158,9 +141,9 @@ def compute_loss(model, data, device, weights=None):
     # T = [sigma_02, sigma_12, sigma_22] = [sigma_xz, sigma_yz, sigma_zz]
     T = sig_top[:, :, 2] 
     
-    # Apply soft edge mask to target load
+    # Apply load within patch only
     mask = load_mask(x_top_load).unsqueeze(1)  # (N, 1)
-    # Target: (0, 0, -p0 * mask) - load smoothly transitions to zero at edges
+    # Target: (0, 0, -p0) inside patch, 0 outside
     target_load = -config.p0 * mask
     target = torch.cat([torch.zeros_like(target_load), 
                        torch.zeros_like(target_load), 

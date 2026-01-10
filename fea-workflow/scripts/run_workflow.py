@@ -22,8 +22,6 @@ from postprocessing.visualization import plot_pinn_results, plot_comparison, plo
 
 def get_cfg_from_pinn_config():
     """Convert pinn-workflow config module variables to the dictionary required by FEM solver"""
-    x_min, x_max = pinn_config.LOAD_PATCH_X
-    y_min, y_max = pinn_config.LOAD_PATCH_Y
     return {
         'geometry': {
             'Lx': pinn_config.Lx, 
@@ -31,10 +29,8 @@ def get_cfg_from_pinn_config():
             'H': pinn_config.H
         },
         'load_patch': {
-            'x_start': x_min / pinn_config.Lx,
-            'x_end': x_max / pinn_config.Lx, 
-            'y_start': y_min / pinn_config.Ly,
-            'y_end': y_max / pinn_config.Ly,
+            'x_start': 0.33, 'x_end': 0.67, 
+            'y_start': 0.33, 'y_end': 0.67,
             'pressure': pinn_config.p0
         },
         'material': {

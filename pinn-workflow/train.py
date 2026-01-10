@@ -21,6 +21,7 @@ def train():
     else:
         device = torch.device('cpu')
     print(f"Using device: {device}")
+    print(f"Using p0 = {config.p0}")
     
     # Initialize Model
     pinn = model.MultiLayerPINN().to(device)

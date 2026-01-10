@@ -124,18 +124,15 @@ def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
 
 def sample_top_load(n):
     """Sample points on load patch only."""
-    x_min, x_max = config.LOAD_PATCH_X
-    y_min, y_max = config.LOAD_PATCH_Y
-    xl = torch.rand(n, 1) * (x_max - x_min) + x_min
-    yl = torch.rand(n, 1) * (y_max - y_min) + y_min
+    # Loaded Patch: Lx/3 < x < 2Lx/3 AND Ly/3 < y < 2Ly/3
+    xl = torch.rand(n, 1) * (config.Lx/3) + config.Lx/3
+    yl = torch.rand(n, 1) * (config.Ly/3) + config.Ly/3
     zl = torch.ones(n, 1) * config.H
     return torch.cat([xl, yl, zl], dim=1)
 
 def sample_top_free(n):
     """Sample points on free top surface (outside load patch)."""
     # Rejection sampling for points outside patch
-    x_min, x_max = config.LOAD_PATCH_X
-    y_min, y_max = config.LOAD_PATCH_Y
     pts_free_list = []
     count = 0
     while count < n:
@@ -143,7 +140,8 @@ def sample_top_free(n):
         x = torch.rand(batch, 1) * config.Lx
         y = torch.rand(batch, 1) * config.Ly
         
-        in_patch = (x > x_min) & (x < x_max) & (y > y_min) & (y < y_max)
+        in_patch = (x > config.Lx/3) & (x < 2*config.Lx/3) & \
+                   (y > config.Ly/3) & (y < 2*config.Ly/3)
         
         mask_free = ~in_patch.squeeze()
         xf, yf = x[mask_free], y[mask_free]
@@ -191,31 +189,29 @@ def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_
     
     # If constrained to load patch or free region
     if constrain_load_patch:
-        x_min, x_max = config.LOAD_PATCH_X
-        y_min, y_max = config.LOAD_PATCH_Y
         if is_load_patch:
             # Clamp to load patch
-            new_pts[:, 0] = torch.clamp(new_pts[:, 0], x_min, x_max)
-            new_pts[:, 1] = torch.clamp(new_pts[:, 1], y_min, y_max)
+            new_pts[:, 0] = torch.clamp(new_pts[:, 0], config.Lx/3, 2*config.Lx/3)
+            new_pts[:, 1] = torch.clamp(new_pts[:, 1], config.Ly/3, 2*config.Ly/3)
         else:
             # Keep outside load patch - if inside, push to nearest edge
             for i in range(n):
                 x, y = new_pts[i, 0].item(), new_pts[i, 1].item()
-                if x_min < x < x_max and y_min < y < y_max:
+                if config.Lx/3 < x < 2*config.Lx/3 and config.Ly/3 < y < 2*config.Ly/3:
                     # Inside patch, push out to nearest boundary
-                    dx_low = x - x_min
-                    dx_high = x_max - x
-                    dy_low = y - y_min
-                    dy_high = y_max - y
+                    dx_low = x - config.Lx/3
+                    dx_high = 2*config.Lx/3 - x
+                    dy_low = y - config.Ly/3
+                    dy_high = 2*config.Ly/3 - y
                     min_dist = min(dx_low, dx_high, dy_low, dy_high)
                     if min_dist == dx_low:
-                        new_pts[i, 0] = x_min - 0.01
+                        new_pts[i, 0] = config.Lx/3 - 0.01
                     elif min_dist == dx_high:
-                        new_pts[i, 0] = x_max + 0.01
+                        new_pts[i, 0] = 2*config.Lx/3 + 0.01
                     elif min_dist == dy_low:
-                        new_pts[i, 1] = y_min - 0.01
+                        new_pts[i, 1] = config.Ly/3 - 0.01
                     else:
-                        new_pts[i, 1] = y_max + 0.01
+                        new_pts[i, 1] = 2*config.Ly/3 + 0.01
                     # Re-clamp
                     new_pts[i, 0] = torch.clamp(new_pts[i, 0], torch.tensor(0.0), torch.tensor(config.Lx))
                     new_pts[i, 1] = torch.clamp(new_pts[i, 1], torch.tensor(0.0), torch.tensor(config.Ly))

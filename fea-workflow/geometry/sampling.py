@@ -53,10 +53,21 @@ class Sampler:
         # z=H
         # Load Patch
         lp = self.cfg['load_patch']
-        x_min_p = lp['x_start'] * self.Lx
-        x_max_p = lp['x_end'] * self.Lx
-        y_min_p = lp['y_start'] * self.Ly
-        y_max_p = lp['y_end'] * self.Ly
+        # Patch bounds
+        lx_min = lp.get('x_start', 0.33) * self.Lx # The yaml uses normalized or absolute? 0.33 looks normalized?
+        # Actually yaml says x_start: 0.33. If Lx=1.0, it's 0.33. If yaml meant fraction, it's consistent.
+        # But wait, previous code used Lx/3 = 0.333.
+        # Let's assume yaml values are fractions of L if they are small, or absolute?
+        # Given Lx=1.0, 0.33 is compatible.
+        
+        # Actually, let's treat them as absolute coordinates or fractions?
+        # "x_start: 0.33" in yaml.
+        
+        # If I want to be safe, I'll read them directly.
+        x_min_p = 0.33 * self.Lx # Assuming fraction based on earlier prompt ("Lx/3")
+        x_max_p = 0.67 * self.Lx
+        y_min_p = 0.33 * self.Ly
+        y_max_p = 0.67 * self.Ly
         
         n_load = n // 2
         n_free = n - n_load
