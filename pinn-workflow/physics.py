@@ -81,24 +81,13 @@ def divergence(sigma, x):
     return div
 
 def compute_loss(model, data, device, weights=None):
-    if weights is None:
-        weights = config.WEIGHTS
-    pde_weight = weights.get('pde', config.WEIGHTS['pde'])
-    bc_weight = weights.get('bc', config.WEIGHTS.get('bc', 1.0))
-    load_weight = weights.get('load', config.WEIGHTS.get('load', 1.0))
-
     total_loss = 0
     losses = {}
+    if weights is None:
+        weights = config.WEIGHTS
     
-    # Helper to safely extract tensor
-    def get_tensor(key):
-        val = data[key]
-        if isinstance(val, list):
-            return val[0].to(device)
-        return val.to(device)
-
     # --- 1. PDE Residuals (Interior) ---
-    x_int = get_tensor('interior')
+    x_int = data['interior'][0].to(device)
     x_int.requires_grad = True
     
     lm, mu = config.Lame_Params[0]
@@ -109,25 +98,25 @@ def compute_loss(model, data, device, weights=None):
     sig = stress(eps, lm, mu)
     div_sigma = divergence(sig, x_int)
     
-    # Equilibrium: -div(sigma) = 0
-    residual = -div_sigma
+    # Equilibrium: -div(sigma) = 0 (scale to stress units)
+    residual = -div_sigma * config.PDE_LENGTH_SCALE
     
     pde_loss = torch.mean(residual**2)
     losses['pde'] = pde_loss
-    total_loss += pde_weight * pde_loss
+    total_loss += weights['pde'] * pde_loss
     
     # Internal strain energy (volume integral, approximated by mean * volume)
     energy_density = 0.5 * torch.einsum('bij,bij->b', eps, sig)
     internal_energy = energy_density.mean() * (config.Lx * config.Ly * config.H)
     
     # --- 2. Dirichlet BCs (Clamped Sides) ---
-    x_side = get_tensor('sides')
+    x_side = data['sides'][0].to(device)
     u_side = model(x_side, 0)
     # u = 0
     bc_loss = torch.mean(u_side**2)
         
     losses['bc_sides'] = bc_loss
-    total_loss += bc_weight * bc_loss
+    total_loss += weights['bc'] * bc_loss
     
     # --- 3. Traction BCs (Top & Bottom) ---
     # Top Loaded
@@ -155,7 +144,7 @@ def compute_loss(model, data, device, weights=None):
     
     loss_load = torch.mean((T - target)**2)
     losses['load'] = loss_load
-    total_loss += load_weight * loss_load
+    total_loss += weights['load'] * loss_load
     
     # External work from applied traction on the load patch
     patch_area = (config.LOAD_PATCH_X[1] - config.LOAD_PATCH_X[0]) * (
@@ -164,7 +153,7 @@ def compute_loss(model, data, device, weights=None):
     external_work = (-config.p0 * u_top[:, 2:3] * mask).mean() * patch_area
     energy_loss = internal_energy - external_work
     losses['energy'] = energy_loss
-    total_loss += config.WEIGHTS['energy'] * energy_loss
+    total_loss += weights['energy'] * energy_loss
     
     # Top Free
     x_top_free = data['top_free'].to(device)
@@ -177,7 +166,7 @@ def compute_loss(model, data, device, weights=None):
     
     loss_free = torch.mean(T_free**2)
     losses['free_top'] = loss_free
-    total_loss += bc_weight * loss_free # Use BC weight
+    total_loss += weights['bc'] * loss_free # Use BC weight
     
     # Bottom Free
     x_bot = data['bottom'].to(device)
@@ -193,28 +182,7 @@ def compute_loss(model, data, device, weights=None):
     
     loss_bot = torch.mean(T_bot**2)
     losses['free_bot'] = loss_bot
-    total_loss += bc_weight * loss_bot
-    
-    # --- 4. Supervised Data Loss (Hybrid Learning) ---
-    if 'x_data' in data and 'u_data' in data:
-        x_data = data['x_data'].to(device)
-        u_data = data['u_data'].to(device)
-        
-        # Only compute if we have data points
-        if x_data.shape[0] > 0:
-            u_pred = model(x_data, 0)
-            
-            # MSE Loss on displacements
-            # We want to match the FEA displacements
-            # Note: FEA data is usually already scaled or in true units.
-            # Our model returns values scaled by OUTPUT_SCALE if it's in the forward pass.
-            
-            data_weight = weights.get('data', config.WEIGHTS.get('data', 1.0))
-            loss_data = torch.mean((u_pred - u_data)**2)
-            losses['data'] = loss_data
-            total_loss += data_weight * loss_data
-        else:
-            losses['data'] = torch.tensor(0.0, device=device)
+    total_loss += weights['bc'] * loss_bot
     
     # No interface continuity for single layer
     
@@ -229,15 +197,8 @@ def compute_residuals(model, data, device):
     """
     residuals = {}
 
-    # Helper to safely extract tensor from data dict
-    def get_tensor(key):
-        val = data[key]
-        if isinstance(val, list):
-            return val[0].to(device)
-        return val.to(device)
-
     # --- PDE Residuals (Interior) ---
-    x_int = get_tensor('interior')
+    x_int = data['interior'][0].to(device)
     x_int.requires_grad = True
     
     lm, mu = config.Lame_Params[0]
@@ -248,18 +209,18 @@ def compute_residuals(model, data, device):
     sig = stress(eps, lm, mu)
     div_sigma = divergence(sig, x_int)
     
-    residual = -div_sigma
+    residual = -div_sigma * config.PDE_LENGTH_SCALE
     residual_mag = torch.sqrt(torch.sum(residual**2, dim=1))
     residuals['interior'] = residual_mag.cpu()
     
     # --- BC Sides Residuals ---
-    x_side = get_tensor('sides')
+    x_side = data['sides'][0].to(device)
     u_side = model(x_side, 0)
     bc_residual = torch.sqrt(torch.sum(u_side**2, dim=1))
     residuals['sides'] = bc_residual.cpu()
     
     # --- Top Load Residuals ---
-    x_top_load = data['top_load'].to(device) # Usually tensor
+    x_top_load = data['top_load'].to(device)
     x_top_load.requires_grad = True
     u_top = model(x_top_load, 0)
     grad_u_top = gradient(u_top, x_top_load)

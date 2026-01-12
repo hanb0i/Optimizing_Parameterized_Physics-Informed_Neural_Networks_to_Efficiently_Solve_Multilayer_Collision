@@ -26,6 +26,15 @@ Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 # --- Loading ---
 p0 = 1.0 # Load magnitude
 
+# --- Unit-consistent loss scaling ---
+# div(sigma) has units of stress/length; scale by a characteristic length.
+PDE_LENGTH_SCALE = H
+
+# --- Boundary condition handling ---
+# Use hard mask early for shape, then switch to soft BCs for magnitude.
+USE_HARD_SIDE_BC = True
+HARD_BC_EPOCHS = 1000
+
 # Load patch boundaries (normalized coordinates)
 LOAD_PATCH_X = [Lx/3, 2*Lx/3]  # [0.333, 0.667]
 LOAD_PATCH_Y = [Ly/3, 2*Ly/3]  # [0.333, 0.667]
@@ -44,6 +53,11 @@ WEIGHTS = {
     'energy': 1.0, # Energy/compliance balance
     'interface_u': 1.0 
 }
+# Loss weight ramp: load-first to raise displacement while preserving shape.
+WEIGHT_RAMP_EPOCHS = 800
+LOAD_WEIGHT_START = 8.0
+PDE_WEIGHT_START = 0.2
+ENERGY_WEIGHT_START = 0.0
 # Sampling
 N_INTERIOR = 10000 # Per layer
 N_BOUNDARY = 2000  # Per face type

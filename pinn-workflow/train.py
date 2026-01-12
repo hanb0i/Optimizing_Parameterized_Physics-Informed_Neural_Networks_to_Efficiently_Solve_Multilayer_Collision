@@ -13,6 +13,17 @@ import model
 import physics
 import matplotlib.pyplot as plt
 
+def get_loss_weights(epoch):
+    if epoch < config.WEIGHT_RAMP_EPOCHS:
+        ramp = max(1, config.WEIGHT_RAMP_EPOCHS)
+        t = epoch / ramp
+        weights = dict(config.WEIGHTS)
+        weights['load'] = config.LOAD_WEIGHT_START + t * (config.WEIGHTS['load'] - config.LOAD_WEIGHT_START)
+        weights['pde'] = config.PDE_WEIGHT_START + t * (config.WEIGHTS['pde'] - config.PDE_WEIGHT_START)
+        weights['energy'] = config.ENERGY_WEIGHT_START + t * (config.WEIGHTS['energy'] - config.ENERGY_WEIGHT_START)
+        return weights
+    return config.WEIGHTS
+
 def train():
     if torch.cuda.is_available():
         device = torch.device('cuda')
@@ -97,6 +108,12 @@ def train():
     
     for epoch in range(config.EPOCHS_ADAM):
         optimizer_adam.zero_grad()
+
+        use_hard_bc = epoch < config.HARD_BC_EPOCHS
+        if config.USE_HARD_SIDE_BC != use_hard_bc:
+            config.USE_HARD_SIDE_BC = use_hard_bc
+            if not use_hard_bc:
+                print("Switching to soft side BCs (mask off) to lift deflection.")
         
         # Periodic data refresh with residual-based adaptive sampling
         if epoch % 500 == 0 and epoch > 0:
@@ -105,7 +122,8 @@ def train():
             training_data = data.get_data(prev_data=training_data, residuals=residuals)
             print(f"  Resampled with residual-based adaptive sampling at epoch {epoch}")
             
-        loss_val, losses = physics.compute_loss(pinn, training_data, device)
+        weights = get_loss_weights(epoch)
+        loss_val, losses = physics.compute_loss(pinn, training_data, device, weights=weights)
         loss_val.backward()
         optimizer_adam.step()
         scheduler.step()  # Update learning rate
@@ -151,6 +169,7 @@ def train():
     
     # L-BFGS Fine-Tuning
     print("Starting L-BFGS Fine-Tuning...")
+    config.USE_HARD_SIDE_BC = False
     optimizer_lbfgs = optim.LBFGS(
         pinn.parameters(),
         lr=1.0,
@@ -170,7 +189,7 @@ def train():
         step_start = time.time()
         def closure():
             optimizer_lbfgs.zero_grad()
-            loss_val, _ = physics.compute_loss(pinn, training_data, device)
+            loss_val, _ = physics.compute_loss(pinn, training_data, device, weights=config.WEIGHTS)
             loss_val.backward()
             return loss_val
 
@@ -178,7 +197,7 @@ def train():
         step_end = time.time()
         
         # Compute losses for logging
-        _, losses = physics.compute_loss(pinn, training_data, device)
+        _, losses = physics.compute_loss(pinn, training_data, device, weights=config.WEIGHTS)
         lbfgs_history['total'].append(loss_val.item())
         lbfgs_history['pde'].append(losses['pde'].item())
         lbfgs_history['bc_sides'].append(losses['bc_sides'].item())

@@ -65,18 +65,19 @@ class LayerNet(nn.Module):
         
         u_raw = self.net(x_scaled)
         
-        # Hard Constraint for Clamped Sides (x=0, x=1, y=0, y=1)
-        # Mask M(x,y) = x(1-x)y(1-y)
-        # Normalized so max value is ~1 (at center x=0.5, y=0.5, val=0.0625 -> *16)
-        x_c = x[:, 0:1]
-        y_c = x[:, 1:2]
+        if config.USE_HARD_SIDE_BC:
+            # Hard Constraint for Clamped Sides (x=0, x=1, y=0, y=1)
+            # Mask M(x,y) = x(1-x)y(1-y)
+            # Normalized so max value is ~1 (at center x=0.5, y=0.5, val=0.0625 -> *16)
+            x_c = x[:, 0:1]
+            y_c = x[:, 1:2]
+            
+            # We assume domain is [0,1]x[0,1] based on config.
+            # If config changed Lx, Ly, this should be dynamic, but for now hardcoded matches config.
+            mask = x_c * (1.0 - x_c) * y_c * (1.0 - y_c) * 16.0
+            return u_raw * mask
         
-        # We assume domain is [0,1]x[0,1] based on config.
-        # If config changed Lx, Ly, this should be dynamic, but for now hardcoded matches config.
-        mask = x_c * (1.0 - x_c) * y_c * (1.0 - y_c) * 16.0
-        
-        # Apply mask
-        return u_raw * mask
+        return u_raw
 
 class MultiLayerPINN(nn.Module):
     def __init__(self):
