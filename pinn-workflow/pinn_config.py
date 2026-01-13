@@ -60,8 +60,11 @@ PDE_WEIGHT_START = 0.2
 ENERGY_WEIGHT_START = 0.0
 # Sampling
 N_INTERIOR = 10000 # Per layer
-N_BOUNDARY = 2000  # Per face type
-UNDER_PATCH_FRACTION = 0.6 # Fraction of interior points sampled under the load patch
+N_SIDES = 2000  # Clamped side faces
+N_TOP_LOAD = 4000  # Load patch (more points to boost displacement)
+N_TOP_FREE = 2000  # Top free surface
+N_BOTTOM = 2000  # Bottom free surface
+UNDER_PATCH_FRACTION = 0.8 # Fraction of interior points sampled under the load patch
 
 # Fourier Features
 FOURIER_DIM = 0 # Number of Fourier frequencies

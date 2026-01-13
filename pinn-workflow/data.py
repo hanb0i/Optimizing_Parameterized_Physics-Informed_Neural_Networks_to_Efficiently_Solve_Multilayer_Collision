@@ -298,8 +298,8 @@ def get_data(prev_data=None, residuals=None):
             interior = torch.cat([interior, interior_patch], dim=0)
         
         # BC Sides: half uniform, half residual-based
-        n_uniform_bc = config.N_BOUNDARY // 2
-        n_residual_bc = config.N_BOUNDARY - n_uniform_bc
+        n_uniform_bc = config.N_SIDES // 2
+        n_residual_bc = config.N_SIDES - n_uniform_bc
         bc_uniform = sample_boundaries(n_uniform_bc, z_min, z_max)
         bc_residual = sample_boundaries_residual_based(
             n_residual_bc, z_min, z_max,
@@ -308,8 +308,8 @@ def get_data(prev_data=None, residuals=None):
         bc_sides = torch.cat([bc_uniform, bc_residual], dim=0)
         
         # Top Load: half uniform, half residual-based
-        n_uniform_load = config.N_BOUNDARY // 2
-        n_residual_load = config.N_BOUNDARY - n_uniform_load
+        n_uniform_load = config.N_TOP_LOAD // 2
+        n_residual_load = config.N_TOP_LOAD - n_uniform_load
         load_uniform = sample_top_load(n_uniform_load)
         load_residual = sample_surface_residual_based(
             n_residual_load, config.H,
@@ -319,8 +319,8 @@ def get_data(prev_data=None, residuals=None):
         top_load = torch.cat([load_uniform, load_residual], dim=0)
         
         # Top Free: half uniform, half residual-based
-        n_uniform_free = config.N_BOUNDARY // 2
-        n_residual_free = config.N_BOUNDARY - n_uniform_free
+        n_uniform_free = config.N_TOP_FREE // 2
+        n_residual_free = config.N_TOP_FREE - n_uniform_free
         free_uniform = sample_top_free(n_uniform_free)
         free_residual = sample_surface_residual_based(
             n_residual_free, config.H,
@@ -330,8 +330,8 @@ def get_data(prev_data=None, residuals=None):
         top_free = torch.cat([free_uniform, free_residual], dim=0)
         
         # Bottom: half uniform, half residual-based
-        n_uniform_bot = config.N_BOUNDARY // 2
-        n_residual_bot = config.N_BOUNDARY - n_uniform_bot
+        n_uniform_bot = config.N_BOTTOM // 2
+        n_residual_bot = config.N_BOTTOM - n_uniform_bot
         bot_uniform = sample_bottom(n_uniform_bot)
         bot_residual = sample_surface_residual_based(
             n_residual_bot, 0.0,
@@ -347,10 +347,10 @@ def get_data(prev_data=None, residuals=None):
             interior = torch.cat([interior_uniform, interior_patch], dim=0)
         else:
             interior = interior_uniform
-        bc_sides = sample_boundaries(config.N_BOUNDARY, z_min, z_max)
-        top_load = sample_top_load(config.N_BOUNDARY)
-        top_free = sample_top_free(config.N_BOUNDARY)
-        bot_free = sample_bottom(config.N_BOUNDARY)
+        bc_sides = sample_boundaries(config.N_SIDES, z_min, z_max)
+        top_load = sample_top_load(config.N_TOP_LOAD)
+        top_free = sample_top_free(config.N_TOP_FREE)
+        bot_free = sample_bottom(config.N_BOTTOM)
     
 
     return {
