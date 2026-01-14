@@ -1,10 +1,7 @@
+
 import torch
 import torch.autograd as autograd
 import pinn_config as config
-
-# ==========================================
-# HELPER FUNCTIONS (MASKS)
-# ==========================================
 
 def load_mask(x):
     """
@@ -41,22 +38,7 @@ def load_mask(x):
     
     return mask
 
-# ==========================================
-# PHYSICS EQUATIONS (LINEAR ELASTICITY)
-# ==========================================
-
 def gradient(u, x):
-    """
-    Computes the spatial gradient of displacement u using automatic differentiation.
-    
-    Args:
-        u: Displacement field (N, 3)
-        x: Spatial coordinates (N, 3)
-        
-    Returns:
-        grad_u: Displacement gradient tensor (N, 3, 3)
-                grad_u[i, j, k] = d(u_j)/d(x_k) for the i-th point
-    """
     # u: (N, 3), x: (N, 3)
     # Returns du/dx: (N, 3, 3)
     # [ [dux/dx, dux/dy, dux/dz],
@@ -78,18 +60,10 @@ def gradient(u, x):
     return grad_u
 
 def strain(grad_u):
-    """
-    Computes the infinitesimal strain tensor (linearized strain).
-    epsilon = 0.5 * (grad_u + grad_u^T)
-    """
     # epsilon = 0.5 * (grad_u + grad_u^T)
     return 0.5 * (grad_u + grad_u.transpose(1, 2))
 
 def stress(eps, lm, mu):
-    """
-    Computes the stress tensor using Hooke's Law for isotropic linear elasticity.
-    sigma = lambda * tr(epsilon) * I + 2 * mu * epsilon
-    """
     # sigma = lambda * tr(eps) * I + 2 * mu * eps
     trace_eps = torch.einsum('bii->b', eps).unsqueeze(1).unsqueeze(2) # (N, 1, 1)
     eye = torch.eye(3, device=eps.device).unsqueeze(0).repeat(eps.shape[0], 1, 1)
@@ -98,11 +72,6 @@ def stress(eps, lm, mu):
     return sigma
 
 def divergence(sigma, x):
-    """
-    Computes the divergence of the stress tensor.
-    div(sigma) represents the internal force density.
-    Detailed expansion: d(sigma_ij)/dx_j
-    """
     # sigma: (N, 3, 3), x: (N, 3)
     # div_sigma: (N, 3) vector
     # We need d(sigma_ij)/dx_j
@@ -128,17 +97,7 @@ def divergence(sigma, x):
         
     return div
 
-# ==========================================
-# LOSS FUNCTION
-# ==========================================
-
 def compute_loss(model, data, device, weights=None):
-    """
-    Computes the total PINN loss, which is a weighted sum of:
-    1. PDE Residuals (Equilibrium equations)
-    2. Boundary Conditions (Hard constraints handle sides, this handles traction)
-    3. Loading Conditions
-    """
     if weights is None:
         weights = config.WEIGHTS
     pde_weight = weights.get('pde', config.WEIGHTS['pde'])
@@ -149,8 +108,6 @@ def compute_loss(model, data, device, weights=None):
     losses = {}
     
     # --- 1. PDE Residuals (Interior) ---
-    # Governing Equation: div(sigma) + BodyForce = 0
-    # Assuming no body force -> div(sigma) = 0
     x_int = data['interior'][0].to(device)
     x_int.requires_grad = True
     
@@ -170,8 +127,6 @@ def compute_loss(model, data, device, weights=None):
     total_loss += pde_weight * pde_loss
     
     # --- 2. Dirichlet BCs (Clamped Sides) ---
-    # While hard constraints handle this, we often include a soft loss 
-    # as a "sanity check" or to reinforce zero values, though it should be zero by construction.
     x_side = data['sides'][0].to(device)
     u_side = model(x_side, 0)
     # u = 0
@@ -181,7 +136,7 @@ def compute_loss(model, data, device, weights=None):
     total_loss += bc_weight * bc_loss
     
     # --- 3. Traction BCs (Top & Bottom) ---
-    # Top Loaded Surface
+    # Top Loaded
     x_top_load = data['top_load'].to(device)
     x_top_load.requires_grad = True
     
@@ -190,9 +145,10 @@ def compute_loss(model, data, device, weights=None):
     grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
     
+    # n = (0, 0, 1)
     # Traction T = sigma · n
-    # For Top surface, n = (0, 0, 1)
-    # T_z = sigma_33, T_x = sigma_13 ...
+    # T_i = sigma_ij * n_j = sigma_i2 (since only n_z=1)
+    # T = [sigma_02, sigma_12, sigma_22] = [sigma_xz, sigma_yz, sigma_zz]
     T = sig_top[:, :, 2] 
     
     # Apply soft edge mask to target load
@@ -207,8 +163,7 @@ def compute_loss(model, data, device, weights=None):
     losses['load'] = loss_load
     total_loss += load_weight * loss_load
     
-    # Top Free Surface (No Load)
-    # Traction should be zero
+    # Top Free
     x_top_free = data['top_free'].to(device)
     x_top_free.requires_grad = True
     u_top_free = model(x_top_free, 0)
@@ -221,8 +176,7 @@ def compute_loss(model, data, device, weights=None):
     losses['free_top'] = loss_free
     total_loss += bc_weight * loss_free # Use BC weight
     
-    # Bottom Free Surface
-    # Traction should be zero. n = (0, 0, -1)
+    # Bottom Free
     x_bot = data['bottom'].to(device)
     x_bot.requires_grad = True
     
@@ -230,6 +184,7 @@ def compute_loss(model, data, device, weights=None):
     grad_u_bot = gradient(u_bot, x_bot)
     sig_bot = stress(strain(grad_u_bot), lm, mu)
     
+    # Bottom surface: n = (0, 0, -1)
     # T = sigma · n = -sigma[:,:,2]
     T_bot = -sig_bot[:, :, 2]
     
