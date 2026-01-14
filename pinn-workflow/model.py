@@ -3,16 +3,7 @@ import torch.nn as nn
 import pinn_config as config
 
 class LayerNet(nn.Module):
-<<<<<<< HEAD
-<<<<<<< HEAD
-    def __init__(self, hidden_layers=3, hidden_units=64, activation=nn.Tanh(), 
-=======
-    def __init__(self, hidden_layers=2, hidden_units=32, activation=nn.Tanh(), 
->>>>>>> a204439ef0cee6b426c4e683743f2eee33c9b01a
-                 fourier_dim=0, fourier_scale=1.0):
-=======
     def __init__(self, hidden_layers=2, hidden_units=32, activation=nn.Tanh()):
->>>>>>> 3176abcf323e43483e790d268adaa1838f1907f2
         super().__init__()
         layers = []
         # Input: x, y, z (3 coords)
@@ -53,16 +44,10 @@ class LayerNet(nn.Module):
         x_c = x[:, 0:1]
         y_c = x[:, 1:2]
         
-<<<<<<< HEAD
-        # We assume domain is [0,1]x[0,1] based on config.
-        # If config changed Lx, Ly, this should be dynamic, but for now hardcoded matches config.
-        mask = x_c * (1.0 - x_c) * y_c * (1.0 - y_c) * 4.0
-=======
         mask = x_c * (1.0 - x_c) * y_c * (1.0 - y_c) * 16.0
->>>>>>> 3176abcf323e43483e790d268adaa1838f1907f2
         
         # Apply mask
-        return u_raw * mask * config.OUTPUT_SCALE
+        return u_raw * mask
 
 class MultiLayerPINN(nn.Module):
     def __init__(self):

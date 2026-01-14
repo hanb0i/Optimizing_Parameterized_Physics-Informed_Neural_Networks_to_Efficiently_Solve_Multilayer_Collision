@@ -8,15 +8,17 @@ from scipy.linalg import cholesky, LinAlgError
 from scipy.optimize import minimize
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
-import soap
-import scipy_patch
+import sys
+import os
+sys.path.append(os.path.dirname(__file__))
 
+import scipy_patch
 import pinn_config as config
 import data
 import model
 import physics
 
-def train(callback=None):
+def train():
     if torch.cuda.is_available():
         device = torch.device('cuda')
     elif torch.backends.mps.is_available():
@@ -25,28 +27,22 @@ def train(callback=None):
         device = torch.device('cpu')
     print(f"Using device: {device}")
     
-    # Initialize Model
     pinn = model.MultiLayerPINN().to(device)
     print(pinn)
     
-    # Initialize Optimizers
-    optimizer_soap = soap.SOAP(
-        pinn.parameters(),
-        lr=config.LEARNING_RATE,
-        betas=(0.95, 0.95),
-        weight_decay=0.0,
-        precondition_frequency=config.SOAP_PRECONDITION_FREQUENCY,
-    )
+    # SOAP Optimizer with learning rate scheduler
+    optimizer_soap = optim.Adam(pinn.parameters(), lr=config.LEARNING_RATE)
+    scheduler = optim.lr_scheduler.StepLR(optimizer_soap, step_size=400, gamma=0.3)
     
-    # Learning rate scheduler: reduce by 0.3 every epochs_soap//5 steps
-    scheduler = optim.lr_scheduler.StepLR(optimizer_soap, step_size=config.EPOCHS_SOAP//5, gamma=0.3)
+    # Initial Data
+    training_data = data.get_data()
     
     # Load FEM data for comparison
     print("Loading FEM solution for comparison...")
     try:
         fea_path = "fea_solution.npy"
         if not os.path.exists(fea_path):
-            fea_path = os.path.join(os.path.dirname(__file__), "fea_solution.npy")
+            fea_path = os.path.join(os.path.dirname(__file__), "..", "fea_solution.npy")
         fem_data = np.load(fea_path, allow_pickle=True).item()
         X_fea = fem_data['x']
         Y_fea = fem_data['y']
@@ -60,14 +56,10 @@ def train(callback=None):
         
         fem_available = True
         print(f"FEM data loaded: {X_fea.shape}")
-    except FileNotFoundError:
-        print("FEM solution not found. Training without FEM comparison.")
+    except Exception as e:
+        print(f"FEM data not available: {e}")
         fem_available = False
     
-    # Data Container
-    training_data = data.get_data()
-    
-    # History - store all loss components separately for each optimizer.
     soap_history = {
         'total': [],
         'pde': [],
@@ -146,15 +138,7 @@ def train(callback=None):
                       f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
                       f"Load: {losses['load']:.6f} | LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
             
-<<<<<<< HEAD
-        # Visualization Callback (Every 500 epochs)
-        if callback and epoch % 500 == 0:
-            callback(f"adam_epoch_{epoch}", pinn, device)
-            
-    print(f"Adam Training Complete. Total Time: {time.time() - start_time:.2f}s")
-=======
     print(f"SOAP Pretraining Complete. Total Time: {time.time() - start_time:.2f}s")
->>>>>>> 3176abcf323e43483e790d268adaa1838f1907f2
     
     # SciPy self-scaled BFGS fine-tuning
     print(f"Starting SciPy SSBFGS Fine-Tuning ({config.SS_BFGS_VARIANT})...")
@@ -176,14 +160,14 @@ def train(callback=None):
         grad_flat = torch.cat([g.reshape(-1) for g in grads])
         return float(loss_val.item()), grad_flat.detach().cpu().numpy().astype(np.float64, copy=False)
 
-    num_bfgs_steps = config.EPOCHS_SSBFGS
-    print(f"Running {num_bfgs_steps} SSBFGS outer steps.")
+    num_ssbfgs_steps = config.EPOCHS_SSBFGS
+    print(f"Running {num_ssbfgs_steps} SSBFGS outer steps.")
     print("Resampling with residual-based adaptive sampling each outer step.")
 
     initial_weights = parameters_to_vector(pinn.parameters()).detach().cpu().numpy().astype(np.float64, copy=False)
     hess_inv0 = np.eye(initial_weights.size, dtype=np.float64)
 
-    for i in range(num_bfgs_steps):
+    for i in range(num_ssbfgs_steps):
         # Resample collocation points with residual-based adaptive sampling
         residuals = physics.compute_residuals(pinn, training_data, device)
         training_data = data.get_data(prev_data=training_data, residuals=residuals)
@@ -204,17 +188,6 @@ def train(callback=None):
             tol=0.0,
         )
         step_end = time.time()
-<<<<<<< HEAD
-        
-<<<<<<< HEAD
-        # Print every step to see progress since total steps is small (5)
-        print(f"L-BFGS Step {i}: Loss: {loss_val.item():.6f} | Time: {step_end - step_start:.4f}s")
-        
-        # Visualization Callback (Every 10 steps)
-        if callback and i % 10 == 0:
-            callback(f"lbfgs_step_{i}", pinn, device)
-=======
-=======
 
         if not result.success:
             print(f"  SciPy minimize status {result.status}: {result.message}")
@@ -232,7 +205,6 @@ def train(callback=None):
         else:
             hess_inv0 = np.eye(len(initial_weights), dtype=np.float64)
 
->>>>>>> 3176abcf323e43483e790d268adaa1838f1907f2
         # Compute losses for logging
         loss_val, losses = physics.compute_loss(pinn, training_data, device)
         ssbfgs_history['total'].append(loss_val.item())
@@ -264,7 +236,6 @@ def train(callback=None):
 
         # Save model at every SSBFGS step
         torch.save(pinn.state_dict(), "pinn_model.pth")
->>>>>>> a204439ef0cee6b426c4e683743f2eee33c9b01a
             
     # Save Model and Loss Histories
     torch.save(pinn.state_dict(), "pinn_model.pth")
