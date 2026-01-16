@@ -47,7 +47,7 @@ SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; high
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
     'pde': 1.0,    # Increased from 1.0
-    'bc': 1.0,      # Reduced, as hard constraint handles side BCs now
+    'bc': 0.7,      # Slightly softer sides so load can gather more budget
     'load': 1.0, # Heavily increased to match traction target
     'energy': 1.0, # Energy/compliance balance
     'interface_u': 1.0 
@@ -62,12 +62,19 @@ FORCE_SOFT_SIDE_BC_FROM_START = True
 SOFT_MODE_PDE_WEIGHT_SCALE = 3.0
 SOFT_MODE_LOAD_WEIGHT_SCALE = 1.0
 # Sampling
-N_INTERIOR = 10000 # Per layer
+N_INTERIOR = 15000 # Per layer
 N_SIDES = 2000  # Clamped side faces
-N_TOP_LOAD = 4000  # Load patch (more points to boost displacement)
+N_TOP_LOAD = 6000  # Load patch (more points to boost displacement)
 N_TOP_FREE = 2000  # Top free surface
 N_BOTTOM = 2000  # Bottom free surface
-UNDER_PATCH_FRACTION = 0.8 # Fraction of interior points sampled under the load patch
+UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
+
+#Resampling/perturbation control
+SAMPLING_NOISE_SCALE = 0.08  # Larger perturbations widen coverage while still sampling residual-rich zones.
+
+# Auxiliary load-patch average displacement penalty
+LOAD_PATCH_UZ_TARGET = -0.05  # Encourage the mean vertical deflection on the load patch
+LOAD_PATCH_UZ_WEIGHT = 0.02   # Keep the auxiliary penalty small so shape stays intact
 
 # Fourier Features
 FOURIER_DIM = 0 # Number of Fourier frequencies

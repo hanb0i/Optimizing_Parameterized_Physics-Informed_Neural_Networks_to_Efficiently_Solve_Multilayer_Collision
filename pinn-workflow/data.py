@@ -41,7 +41,7 @@ def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     sampled_pts = prev_pts[indices]
     
     # Add noise to create new points nearby
-    noise_scale = 0.05  # 5% perturbation
+    noise_scale = config.SAMPLING_NOISE_SCALE  # Finer noise keeps high-res residual points clustered.
     noise_x = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Lx
     noise_y = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Ly
     noise_z = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (z_max - z_min)
@@ -99,7 +99,7 @@ def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     indices = torch.multinomial(residual_probs, n, replacement=True)
     sampled_pts = prev_pts[indices]
     
-    noise_scale = 0.05
+    noise_scale = config.SAMPLING_NOISE_SCALE
     # Keep boundary constraints while perturbing
     new_pts = sampled_pts.clone()
     
@@ -183,7 +183,7 @@ def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_
     indices = torch.multinomial(residual_probs, n, replacement=True)
     sampled_pts = prev_pts[indices]
     
-    noise_scale = 0.05
+    noise_scale = config.SAMPLING_NOISE_SCALE
     noise_x = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Lx
     noise_y = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Ly
     noise = torch.cat([noise_x, noise_y, torch.zeros(n, 1)], dim=1)

@@ -1,5 +1,6 @@
 # Compute PDE residual on x-z plane at mid-y
 import physics
+import numpy as np
 
 # Sample points on x-z plane
 nx_res, nz_res = 50, 20
