@@ -9,6 +9,9 @@ from contextlib import redirect_stdout
 import numpy as np
 import torch
 
+if __package__ is None:
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from surrogate_workflow import config
 from surrogate_workflow import baseline
 from surrogate_workflow import data as data_utils
@@ -24,7 +27,9 @@ from solver.fem_solver import solve_fem  # noqa: E402
 
 DEFAULT_MESHES = [
     {"ne_x": 20, "ne_y": 20, "ne_z": 6},
+    {"ne_x": 30, "ne_y": 30, "ne_z": 9},
     {"ne_x": 40, "ne_y": 40, "ne_z": 12},
+    {"ne_x": 50, "ne_y": 50, "ne_z": 15},
 ]
 
 
@@ -35,6 +40,25 @@ def _report(lines, message):
 
 def _format_mesh(mesh):
     return f"{mesh['ne_x']}x{mesh['ne_y']}x{mesh['ne_z']}"
+
+
+def _mesh_elements(mesh):
+    return mesh["ne_x"] * mesh["ne_y"] * mesh["ne_z"]
+
+
+def _interp_top_surface(x_ref, y_ref, uz_ref, x, y):
+    x_ref = np.asarray(x_ref, dtype=float)
+    y_ref = np.asarray(y_ref, dtype=float)
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    # Bilinear interpolation via sequential 1D passes.
+    interp_x = np.empty((x.shape[0], y_ref.shape[0]))
+    for j in range(y_ref.shape[0]):
+        interp_x[:, j] = np.interp(x, x_ref, uz_ref[:, j])
+    interp_xy = np.empty((x.shape[0], y.shape[0]))
+    for i in range(x.shape[0]):
+        interp_xy[i, :] = np.interp(y, y_ref, interp_x[i, :])
+    return interp_xy
 
 
 def _call_with_output(lines, func, *args, **kwargs):
@@ -91,14 +115,63 @@ def mesh_sweep(lines, meshes):
         x, y, z, u_grid = _call_with_output(lines, solve_fem, cfg_mesh)
         uz_top = u_grid[:, :, -1, 2]
         peak = float(-np.min(uz_top))
-        results.append((mesh, peak))
+        results.append({
+            "mesh": mesh,
+            "x": x,
+            "y": y,
+            "uz_top": uz_top,
+            "peak": peak,
+        })
         _report(lines, f"  peak top |u_z| = {peak:.6e}")
 
-    for i in range(1, len(results)):
-        prev = results[i - 1][1]
-        curr = results[i][1]
+    ordered = sorted(results, key=lambda item: _mesh_elements(item["mesh"]))
+    for i in range(1, len(ordered)):
+        prev = ordered[i - 1]["peak"]
+        curr = ordered[i]["peak"]
         rel = abs(curr - prev) / max(prev, 1e-12)
-        _report(lines, f"  rel change {_format_mesh(results[i-1][0])} -> {_format_mesh(results[i][0])}: {rel:.2%}")
+        _report(lines, f"  rel change {_format_mesh(ordered[i-1]['mesh'])} -> {_format_mesh(ordered[i]['mesh'])}: {rel:.2%}")
+
+    if ordered:
+        ref = ordered[-1]
+        ref_peak = ref["peak"]
+        _report(lines, "Mesh convergence (errors vs finest resolution)")
+        _report(lines, "  (sorted by element count; errors normalized by reference norms)")
+        _report(lines, f"Reference mesh: {_format_mesh(ref['mesh'])}")
+        rel_peak_errors = []
+        rel_l2_errors = []
+        for item in ordered:
+            if item is ref:
+                rel_peak = 0.0
+                rel_l2 = 0.0
+            else:
+                item_on_ref = _interp_top_surface(
+                    item["x"],
+                    item["y"],
+                    item["uz_top"],
+                    ref["x"],
+                    ref["y"],
+                )
+                diff = item_on_ref - ref["uz_top"]
+                rel_l2 = float(np.linalg.norm(diff) / max(np.linalg.norm(ref["uz_top"]), 1e-12))
+                item_peak = float(-np.min(item_on_ref))
+                rel_peak = abs(item_peak - ref_peak) / max(abs(ref_peak), 1e-12)
+            rel_peak_errors.append(rel_peak)
+            rel_l2_errors.append(rel_l2)
+            _report(
+                lines,
+                f"  {_format_mesh(item['mesh'])}: peak rel err {rel_peak:.2%}, top-surface L2 rel err {rel_l2:.2%}",
+            )
+        for i in range(1, len(ordered)):
+            prev_peak = rel_peak_errors[i - 1]
+            curr_peak = rel_peak_errors[i]
+            prev_l2 = rel_l2_errors[i - 1]
+            curr_l2 = rel_l2_errors[i]
+            peak_red = (prev_peak - curr_peak) / max(prev_peak, 1e-12)
+            l2_red = (prev_l2 - curr_l2) / max(prev_l2, 1e-12)
+            _report(
+                lines,
+                f"  error reduction {_format_mesh(ordered[i-1]['mesh'])} -> {_format_mesh(ordered[i]['mesh'])}: peak {peak_red:.2%}, L2 {l2_red:.2%}",
+            )
     _report(lines, "")
 
 

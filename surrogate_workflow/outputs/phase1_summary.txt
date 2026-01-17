@@ -8,5 +8,5 @@ Test MSE: 1.202671e-10
 Optimization safety check:
   mu*: [491.409 497.176]
   surrogate y(mu*): 1.569336e-03
-  baseline y(mu*): 1.558978e-03
-  baseline y(mu_mid): 1.899659e-03
+  baseline y(mu*): 1.381256e-03
+  baseline y(mu_mid): 1.683318e-03

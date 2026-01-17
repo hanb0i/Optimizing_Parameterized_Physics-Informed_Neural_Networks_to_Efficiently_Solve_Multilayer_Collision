@@ -55,11 +55,25 @@ def split_indices(n_samples, train_frac, val_frac, seed):
 
 def generate_dataset():
     x_raw = sample_designs(config.N_SAMPLES, config.DESIGN_RANGES, config.SEED)
-    y_raw = np.zeros(config.N_SAMPLES, dtype=float)
+    if getattr(config, "TREND_ANCHOR_POINTS", 0) > 0:
+        param_names = list(config.DESIGN_RANGES.keys())
+        if config.TREND_SWEEP_PARAM in param_names:
+            ranges = config.DESIGN_RANGES
+            sweep = np.linspace(
+                ranges[config.TREND_SWEEP_PARAM][0],
+                ranges[config.TREND_SWEEP_PARAM][1],
+                config.TREND_ANCHOR_POINTS,
+            )
+            mu_mid = np.array([(ranges[name][0] + ranges[name][1]) * 0.5 for name in param_names])
+            idx = param_names.index(config.TREND_SWEEP_PARAM)
+            anchors = np.tile(mu_mid, (config.TREND_ANCHOR_POINTS, 1))
+            anchors[:, idx] = sweep
+            x_raw = np.vstack([x_raw, anchors])
+    y_raw = np.zeros(x_raw.shape[0], dtype=float)
     for i, mu in enumerate(x_raw):
         y_raw[i] = baseline.compute_response(mu)
         if (i + 1) % 10 == 0 or i == 0:
-            print(f"Baseline {i + 1}/{config.N_SAMPLES}: y={y_raw[i]:.6f}")
+            print(f"Baseline {i + 1}/{x_raw.shape[0]}: y={y_raw[i]:.6f}")
     x_norm, x_min, x_max = normalize_inputs(x_raw, config.DESIGN_RANGES)
     y_norm, y_min, y_max = normalize_outputs(y_raw)
     return {

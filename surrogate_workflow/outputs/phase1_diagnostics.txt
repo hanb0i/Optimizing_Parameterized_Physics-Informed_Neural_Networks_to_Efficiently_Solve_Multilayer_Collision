@@ -22,13 +22,35 @@ Running mesh 20x20x6
 Initializing FEA Solver...
 Assembling...
 Solving...
-  peak top |u_z| = 1.707878e-03
+  peak top |u_z| = 1.597886e-03
+Running mesh 30x30x9
+Initializing FEA Solver...
+Assembling...
+Solving...
+  peak top |u_z| = 1.681401e-03
 Running mesh 40x40x12
 Initializing FEA Solver...
 Assembling...
 Solving...
-  peak top |u_z| = 1.599712e-03
-  rel change 20x20x6 -> 40x40x12: 6.33%
+  peak top |u_z| = 1.707697e-03
+Running mesh 50x50x15
+Initializing FEA Solver...
+Assembling...
+Solving...
+  peak top |u_z| = 1.720414e-03
+  rel change 20x20x6 -> 30x30x9: 5.23%
+  rel change 30x30x9 -> 40x40x12: 1.56%
+  rel change 40x40x12 -> 50x50x15: 0.74%
+Mesh convergence (errors vs finest resolution)
+  (sorted by element count; errors normalized by reference norms)
+Reference mesh: 50x50x15
+  20x20x6: peak rel err 7.12%, top-surface L2 rel err 7.66%
+  30x30x9: peak rel err 2.27%, top-surface L2 rel err 2.59%
+  40x40x12: peak rel err 0.74%, top-surface L2 rel err 0.91%
+  50x50x15: peak rel err 0.00%, top-surface L2 rel err 0.00%
+  error reduction 20x20x6 -> 30x30x9: peak 68.16%, L2 66.13%
+  error reduction 30x30x9 -> 40x40x12: peak 67.40%, L2 65.06%
+  error reduction 40x40x12 -> 50x50x15: peak 100.00%, L2 100.00%
 
 Step 3 — Surrogate Dataset Checks
 Samples: 200, dim: 2
@@ -39,8 +61,8 @@ Out-of-range params: none
 Step 4 — Overfit Capacity Check
 Samples: 10
 Overfit model: widened/deepened (tanh) for capacity check
-Final train MSE: 9.988696e-08 
-Target MSE: 1.0e-08
+Final train MSE: 4.879900e-07
+Target MSE: 1.0e-07
 Status: FAIL
 
 Step 5 — Surrogate Validation
@@ -139,14 +161,11 @@ Solving...
 Optimization safety check:
   mu*: [491.409 497.176]
   surrogate y(mu*): 1.569336e-03
-  baseline y(mu*): 1.558978e-03
+  baseline y(mu*): 1.381256e-03
 
 Step 6 — Top-k Optimization Safety Check
 Candidates: 200
 Top-k: 3
 Surrogate best (min) y: 1.584815e-03
-Baseline top-k mean y: 1.593710e-03
-Baseline top-k min y: 1.577256e-03
-
-Use four different resolutions instead. And then how much is the error reduced. If it is 5 or 4 meshes. Compare error with the finite term resolutione. Need at least three to see the error. 
-Error to norm. 
+Baseline top-k mean y: 1.412050e-03
+Baseline top-k min y: 1.397476e-03
