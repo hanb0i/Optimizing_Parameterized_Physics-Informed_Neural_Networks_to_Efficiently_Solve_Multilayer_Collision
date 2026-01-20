@@ -103,7 +103,51 @@ def main():
     plt.tight_layout()
     plt.savefig("comparison_top.png", dpi=150)
     print("Saved comparison_top.png")
-    plt.show()
+    # plt.show() # Commented out show to prevent blocking in automation
+
+    # --- Cross-Section Plot (XZ plane at mid Y) ---
+    ny = Y_fea.shape[1]
+    mid_y_idx = ny // 2
+    
+    # Extract slices
+    X_slice = X_fea[:, mid_y_idx, :]
+    Z_slice = Z_fea[:, mid_y_idx, :]
+    u_z_fea_slice = U_fea[:, mid_y_idx, :, 2]
+    u_z_pinn_slice = U_pinn[:, mid_y_idx, :, 2]
+    abs_diff_slice = np.abs(u_z_fea_slice - u_z_pinn_slice)
+    
+    fig2, axes2 = plt.subplots(1, 3, figsize=(18, 5))
+    
+    # 1. FEA
+    c1 = axes2[0].contourf(
+        X_slice, Z_slice, u_z_fea_slice, levels=50, cmap="jet"
+    )
+    axes2[0].set_title(f"FEA u_z (Slice @ Y={Y_fea[0, mid_y_idx, 0]:.2f})", fontsize=14)
+    axes2[0].set_xlabel("x")
+    axes2[0].set_ylabel("z")
+    plt.colorbar(c1, ax=axes2[0])
+    
+    # 2. PINN
+    c2 = axes2[1].contourf(
+        X_slice, Z_slice, u_z_pinn_slice, levels=50, cmap="jet"
+    )
+    axes2[1].set_title("PINN u_z (Slice)", fontsize=14)
+    axes2[1].set_xlabel("x")
+    axes2[1].set_ylabel("z")
+    plt.colorbar(c2, ax=axes2[1])
+    
+    # 3. Error
+    c3 = axes2[2].contourf(
+        X_slice, Z_slice, abs_diff_slice, levels=50, cmap="magma"
+    )
+    axes2[2].set_title("Absolute Error |FEA - PINN|", fontsize=14)
+    axes2[2].set_xlabel("x")
+    axes2[2].set_ylabel("z")
+    plt.colorbar(c3, ax=axes2[2])
+    
+    plt.tight_layout()
+    plt.savefig("comparison_cross_section.png", dpi=150)
+    print("Saved comparison_cross_section.png")
 
 
 if __name__ == "__main__":
