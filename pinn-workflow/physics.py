@@ -109,6 +109,18 @@ def compute_loss(model, data, device, weights=None):
     energy_density = 0.5 * torch.einsum('bij,bij->b', eps, sig)
     internal_energy = energy_density.mean() * (config.Lx * config.Ly * config.H)
     
+    # --- 4. Supervised Data Loss (Hybrid Learning) ---
+    if 'x_data' in data and 'u_data' in data:
+        x_data = data['x_data'].to(device)
+        u_data = data['u_data'].to(device)
+        
+        if x_data.shape[0] > 0:
+            u_pred = model(x_data, 0)
+            data_weight = weights.get('data', config.WEIGHTS.get('data', 1.0))
+            loss_data = torch.mean((u_pred - u_data)**2)
+            losses['data'] = loss_data
+            total_loss += data_weight * loss_data
+    
     # --- 2. Dirichlet BCs (Clamped Sides) ---
     x_side = data['sides'][0].to(device)
     u_side = model(x_side, 0)

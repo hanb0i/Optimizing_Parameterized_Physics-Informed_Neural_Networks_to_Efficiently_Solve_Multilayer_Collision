@@ -50,7 +50,8 @@ WEIGHTS = {
     'bc': 0.7,      # Slightly softer sides so load can gather more budget
     'load': 1.0, # Heavily increased to match traction target
     'energy': 1.0, # Energy/compliance balance
-    'interface_u': 1.0 
+    'interface_u': 1.0,
+    'data': 1.0
 }
 # Loss weight ramp: load-first to raise displacement while preserving shape.
 WEIGHT_RAMP_EPOCHS = 0
@@ -67,6 +68,7 @@ N_SIDES = 2000  # Clamped side faces
 N_TOP_LOAD = 6000  # Load patch (more points to boost displacement)
 N_TOP_FREE = 2000  # Top free surface
 N_BOTTOM = 2000  # Bottom free surface
+N_DATA = 1000 # Number of sparse FEA data points
 UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
 
 #Resampling/perturbation control

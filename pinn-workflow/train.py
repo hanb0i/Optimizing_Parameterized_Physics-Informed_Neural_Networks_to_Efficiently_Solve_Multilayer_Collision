@@ -79,6 +79,11 @@ def train():
     # Data Container
     training_data = data.get_data()
     
+    # Load Hybrid Training Data (Sparse FEA samples)
+    x_fea_train, u_fea_train = data.get_fea_samples(config.N_DATA)
+    if len(x_fea_train) > 0:
+        print(f"Loaded {len(x_fea_train)} sparse FEA points for hybrid training.")
+
     # History - store all loss components separately for each optimizer
     adam_history = {
         'total': [],
@@ -88,6 +93,7 @@ def train():
         'free_bot': [],
         'load': [],
         'energy': [],
+        'data': [],
         'fem_mae': [],
         'fem_max_err': [],
         'epochs': []
@@ -101,6 +107,7 @@ def train():
         'free_bot': [],
         'load': [],
         'energy': [],
+        'data': [],
         'fem_mae': [],
         'fem_max_err': [],
         'steps': []
@@ -123,13 +130,25 @@ def train():
                 if not use_hard_bc:
                     print("Switching to soft side BCs (mask off) to lift deflection.")
         
-        # Periodic data refresh with residual-based adaptive sampling
+        # Periodic data refresh
         if epoch % 500 == 0 and epoch > 0:
             # Compute residuals for adaptive sampling
             residuals = physics.compute_residuals(pinn, training_data, device)
             training_data = data.get_data(prev_data=training_data, residuals=residuals)
-            print(f"  Resampled with residual-based adaptive sampling at epoch {epoch}")
             
+            # Resample FEA data
+            x_fea_train, u_fea_train = data.get_fea_samples(config.N_DATA)
+            # Add to training_data dict for compute_loss to see it
+            training_data['x_data'] = x_fea_train
+            training_data['u_data'] = u_fea_train
+            
+            print(f"  Resampled PDE points and FEA data at epoch {epoch}")
+        
+        # Ensure data is always in the dict for every step (since get_data creates fresh dict)
+        if 'x_data' not in training_data:
+             training_data['x_data'] = x_fea_train
+             training_data['u_data'] = u_fea_train
+
         weights = get_loss_weights(epoch, use_hard_bc)
         loss_val, losses = physics.compute_loss(pinn, training_data, device, weights=weights)
         loss_val.backward()
@@ -143,6 +162,7 @@ def train():
         adam_history['free_bot'].append(losses['free_bot'].item())
         adam_history['load'].append(losses['load'].item())
         adam_history['energy'].append(losses['energy'].item())
+        adam_history['data'].append(losses.get('data', torch.tensor(0.0)).item())
         
         if epoch % 100 == 0:
             current_time = time.time()
@@ -161,15 +181,13 @@ def train():
                     adam_history['fem_max_err'].append(max_err)
                     adam_history['epochs'].append(epoch)
                     
-                print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
-                      f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
-                      f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
+                print(f"Epoch {epoch}: Total: {loss_val.item():.6f} | "
+                      f"PDE: {losses['pde']:.6f} | Data: {losses.get('data', 0):.6f} | "
                       f"Load: {losses['load']:.6f} | Energy: {losses['energy']:.6f} | LR: {current_lr:.2e} | "
                       f"FEM MAE: {mae:.6f} | Time: {step_duration:.4f}s")
             else:
-                print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
-                      f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
-                      f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
+                print(f"Epoch {epoch}: Total: {loss_val.item():.6f} | "
+                      f"PDE: {losses['pde']:.6f} | Data: {losses.get('data', 0):.6f} | "
                       f"Load: {losses['load']:.6f} | Energy: {losses['energy']:.6f} | "
                       f"LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
             
@@ -188,12 +206,22 @@ def train():
         
     num_lbfgs_steps = config.EPOCHS_LBFGS
     print(f"Running {num_lbfgs_steps} L-BFGS outer steps.")
-    print("Resampling with residual-based adaptive sampling each outer step.")
+    print("Resampling PDE points every step. Resampling FEA data every 20 steps.")
     
     for i in range(num_lbfgs_steps):
-        # Resample collocation points with residual-based adaptive sampling
+        # 1. Always resample PDE/BC points using residual-based adaptive sampling
         residuals = physics.compute_residuals(pinn, training_data, device)
         training_data = data.get_data(prev_data=training_data, residuals=residuals)
+        
+        # 2. Resample FEA Data only every 20 steps
+        if i % 20 == 0:
+            x_fea_train, u_fea_train = data.get_fea_samples(config.N_DATA)
+            if i > 0:
+                print(f"  Resampled FEA data at L-BFGS step {i}")
+        
+        # Ensure current FEA batch is in the training data dictionary
+        training_data['x_data'] = x_fea_train
+        training_data['u_data'] = u_fea_train
         
         step_start = time.time()
         def closure():
@@ -214,6 +242,7 @@ def train():
         lbfgs_history['free_bot'].append(losses['free_bot'].item())
         lbfgs_history['load'].append(losses['load'].item())
         lbfgs_history['energy'].append(losses['energy'].item())
+        lbfgs_history['data'].append(losses.get('data', torch.tensor(0.0)).item())
         
         # Compute FEM error and print
         if fem_available:
