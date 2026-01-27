@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 PINN_WORKFLOW_DIR = os.path.join(REPO_ROOT, "pinn-workflow")
 if PINN_WORKFLOW_DIR not in sys.path:
     sys.path.insert(0, PINN_WORKFLOW_DIR)

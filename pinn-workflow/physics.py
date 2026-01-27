@@ -81,13 +81,17 @@ def divergence(sigma, x):
     return div
 
 def compute_loss(model, data, device, weights=None):
+    def _as_batch(x):
+        # Accept either (N, 3) or (3,) and return (N, 3).
+        return x.unsqueeze(0) if x.dim() == 1 else x
+
     total_loss = 0
     losses = {}
     if weights is None:
         weights = config.WEIGHTS
     
     # --- 1. PDE Residuals (Interior) ---
-    x_int = data['interior'][0].to(device)
+    x_int = _as_batch(data['interior']).to(device)
     x_int.requires_grad = True
     
     lm, mu = config.Lame_Params[0]
@@ -109,20 +113,8 @@ def compute_loss(model, data, device, weights=None):
     energy_density = 0.5 * torch.einsum('bij,bij->b', eps, sig)
     internal_energy = energy_density.mean() * (config.Lx * config.Ly * config.H)
     
-    # --- 4. Supervised Data Loss (Hybrid Learning) ---
-    if 'x_data' in data and 'u_data' in data:
-        x_data = data['x_data'].to(device)
-        u_data = data['u_data'].to(device)
-        
-        if x_data.shape[0] > 0:
-            u_pred = model(x_data, 0)
-            data_weight = weights.get('data', config.WEIGHTS.get('data', 1.0))
-            loss_data = torch.mean((u_pred - u_data)**2)
-            losses['data'] = loss_data
-            total_loss += data_weight * loss_data
-    
     # --- 2. Dirichlet BCs (Clamped Sides) ---
-    x_side = data['sides'][0].to(device)
+    x_side = _as_batch(data['sides']).to(device)
     u_side = model(x_side, 0)
     # u = 0
     bc_loss = torch.mean(u_side**2)
@@ -132,7 +124,7 @@ def compute_loss(model, data, device, weights=None):
     
     # --- 3. Traction BCs (Top & Bottom) ---
     # Top Loaded
-    x_top_load = data['top_load'].to(device)
+    x_top_load = _as_batch(data['top_load']).to(device)
     x_top_load.requires_grad = True
     
     lm, mu = config.Lame_Params[0] # Single layer
@@ -168,7 +160,7 @@ def compute_loss(model, data, device, weights=None):
     total_loss += weights['energy'] * energy_loss
     
     # Top Free
-    x_top_free = data['top_free'].to(device)
+    x_top_free = _as_batch(data['top_free']).to(device)
     x_top_free.requires_grad = True
     u_top_free = model(x_top_free, 0)
     grad_u_free = gradient(u_top_free, x_top_free)
@@ -181,7 +173,7 @@ def compute_loss(model, data, device, weights=None):
     total_loss += weights['bc'] * loss_free # Use BC weight
     
     # Bottom Free
-    x_bot = data['bottom'].to(device)
+    x_bot = _as_batch(data['bottom']).to(device)
     x_bot.requires_grad = True
     
     u_bot = model(x_bot, 0)
@@ -207,10 +199,14 @@ def compute_residuals(model, data, device):
     Returns:
         Dictionary of residual magnitudes for each data type
     """
+    def _as_batch(x):
+        # Accept either (N, 3) or (3,) and return (N, 3).
+        return x.unsqueeze(0) if x.dim() == 1 else x
+
     residuals = {}
 
     # --- PDE Residuals (Interior) ---
-    x_int = data['interior'][0].to(device)
+    x_int = _as_batch(data['interior']).to(device)
     x_int.requires_grad = True
     
     lm, mu = config.Lame_Params[0]
@@ -226,13 +222,13 @@ def compute_residuals(model, data, device):
     residuals['interior'] = residual_mag.cpu()
     
     # --- BC Sides Residuals ---
-    x_side = data['sides'][0].to(device)
+    x_side = _as_batch(data['sides']).to(device)
     u_side = model(x_side, 0)
     bc_residual = torch.sqrt(torch.sum(u_side**2, dim=1))
     residuals['sides'] = bc_residual.cpu()
     
     # --- Top Load Residuals ---
-    x_top_load = data['top_load'].to(device)
+    x_top_load = _as_batch(data['top_load']).to(device)
     x_top_load.requires_grad = True
     u_top = model(x_top_load, 0)
     grad_u_top = gradient(u_top, x_top_load)
@@ -248,7 +244,7 @@ def compute_residuals(model, data, device):
     residuals['top_load'] = load_residual.cpu()
     
     # --- Top Free Residuals ---
-    x_top_free = data['top_free'].to(device)
+    x_top_free = _as_batch(data['top_free']).to(device)
     x_top_free.requires_grad = True
     u_top_free = model(x_top_free, 0)
     grad_u_free = gradient(u_top_free, x_top_free)
@@ -258,7 +254,7 @@ def compute_residuals(model, data, device):
     residuals['top_free'] = free_residual.cpu()
     
     # --- Bottom Residuals ---
-    x_bot = data['bottom'].to(device)
+    x_bot = _as_batch(data['bottom']).to(device)
     x_bot.requires_grad = True
     u_bot = model(x_bot, 0)
     grad_u_bot = gradient(u_bot, x_bot)
