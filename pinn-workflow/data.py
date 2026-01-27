@@ -1,4 +1,3 @@
-
 import torch
 import numpy as np
 import pinn_config as config
@@ -7,6 +6,15 @@ def sample_domain(n, z_min, z_max):
     # Uniform sampling
     x = torch.rand(n, 1) * config.Lx
     y = torch.rand(n, 1) * config.Ly
+    z = torch.rand(n, 1) * (z_max - z_min) + z_min
+    return torch.cat([x, y, z], dim=1)
+
+def sample_domain_under_patch(n, z_min, z_max):
+    """Sample interior points directly under the load patch."""
+    x_min, x_max = config.LOAD_PATCH_X
+    y_min, y_max = config.LOAD_PATCH_Y
+    x = torch.rand(n, 1) * (x_max - x_min) + x_min
+    y = torch.rand(n, 1) * (y_max - y_min) + y_min
     z = torch.rand(n, 1) * (z_max - z_min) + z_min
     return torch.cat([x, y, z], dim=1)
 
@@ -33,7 +41,7 @@ def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     sampled_pts = prev_pts[indices]
     
     # Add noise to create new points nearby
-    noise_scale = 0.05  # 5% perturbation
+    noise_scale = config.SAMPLING_NOISE_SCALE  # Finer noise keeps high-res residual points clustered.
     noise_x = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Lx
     noise_y = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Ly
     noise_z = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (z_max - z_min)
@@ -91,7 +99,7 @@ def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     indices = torch.multinomial(residual_probs, n, replacement=True)
     sampled_pts = prev_pts[indices]
     
-    noise_scale = 0.05
+    noise_scale = config.SAMPLING_NOISE_SCALE
     # Keep boundary constraints while perturbing
     new_pts = sampled_pts.clone()
     
@@ -99,20 +107,20 @@ def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     for i in range(n):
         pt = new_pts[i]
         if torch.abs(pt[0]) < 1e-6:  # x=0 face
-            new_pts[i, 1] += (torch.rand(1) - 0.5) * 2 * noise_scale * config.Ly
-            new_pts[i, 2] += (torch.rand(1) - 0.5) * 2 * noise_scale * (z_max - z_min)
+            new_pts[i, 1] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * config.Ly
+            new_pts[i, 2] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * (z_max - z_min)
             new_pts[i, 0] = 0.0
         elif torch.abs(pt[0] - config.Lx) < 1e-6:  # x=Lx face
-            new_pts[i, 1] += (torch.rand(1) - 0.5) * 2 * noise_scale * config.Ly
-            new_pts[i, 2] += (torch.rand(1) - 0.5) * 2 * noise_scale * (z_max - z_min)
+            new_pts[i, 1] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * config.Ly
+            new_pts[i, 2] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * (z_max - z_min)
             new_pts[i, 0] = config.Lx
         elif torch.abs(pt[1]) < 1e-6:  # y=0 face
-            new_pts[i, 0] += (torch.rand(1) - 0.5) * 2 * noise_scale * config.Lx
-            new_pts[i, 2] += (torch.rand(1) - 0.5) * 2 * noise_scale * (z_max - z_min)
+            new_pts[i, 0] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * config.Lx
+            new_pts[i, 2] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * (z_max - z_min)
             new_pts[i, 1] = 0.0
         elif torch.abs(pt[1] - config.Ly) < 1e-6:  # y=Ly face
-            new_pts[i, 0] += (torch.rand(1) - 0.5) * 2 * noise_scale * config.Lx
-            new_pts[i, 2] += (torch.rand(1) - 0.5) * 2 * noise_scale * (z_max - z_min)
+            new_pts[i, 0] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * config.Lx
+            new_pts[i, 2] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * (z_max - z_min)
             new_pts[i, 1] = config.Ly
     
     # Clamp
@@ -175,7 +183,7 @@ def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_
     indices = torch.multinomial(residual_probs, n, replacement=True)
     sampled_pts = prev_pts[indices]
     
-    noise_scale = 0.05
+    noise_scale = config.SAMPLING_NOISE_SCALE
     noise_x = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Lx
     noise_y = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Ly
     noise = torch.cat([noise_x, noise_y, torch.zeros(n, 1)], dim=1)
@@ -266,31 +274,41 @@ def get_data(prev_data=None, residuals=None):
     # Decide whether to use residual-based sampling (50% uniform, 50% residual-based)
     use_residual = (prev_data is not None and residuals is not None)
     
+    n_patch = int(config.N_INTERIOR * config.UNDER_PATCH_FRACTION)
+    if n_patch < 0:
+        n_patch = 0
+    if n_patch > config.N_INTERIOR:
+        n_patch = config.N_INTERIOR
+    n_interior = config.N_INTERIOR - n_patch
+    
     if use_residual:
-        n_uniform = config.N_INTERIOR // 2
-        n_residual = config.N_INTERIOR - n_uniform
+        n_uniform = n_interior // 2
+        n_residual = n_interior - n_uniform
         
         # Interior: half uniform, half residual-based
         interior_uniform = sample_domain(n_uniform, z_min, z_max)
         interior_residual = sample_domain_residual_based(
             n_residual, z_min, z_max, 
-            prev_data['interior'], residuals['interior']
+            prev_data['interior'][0], residuals['interior']
         )
         interior = torch.cat([interior_uniform, interior_residual], dim=0)
+        if n_patch > 0:
+            interior_patch = sample_domain_under_patch(n_patch, z_min, z_max)
+            interior = torch.cat([interior, interior_patch], dim=0)
         
         # BC Sides: half uniform, half residual-based
-        n_uniform_bc = config.N_BOUNDARY // 2
-        n_residual_bc = config.N_BOUNDARY - n_uniform_bc
+        n_uniform_bc = config.N_SIDES // 2
+        n_residual_bc = config.N_SIDES - n_uniform_bc
         bc_uniform = sample_boundaries(n_uniform_bc, z_min, z_max)
         bc_residual = sample_boundaries_residual_based(
             n_residual_bc, z_min, z_max,
-            prev_data['sides'], residuals['sides']
+            prev_data['sides'][0], residuals['sides']
         )
         bc_sides = torch.cat([bc_uniform, bc_residual], dim=0)
         
         # Top Load: half uniform, half residual-based
-        n_uniform_load = config.N_BOUNDARY // 2
-        n_residual_load = config.N_BOUNDARY - n_uniform_load
+        n_uniform_load = config.N_TOP_LOAD // 2
+        n_residual_load = config.N_TOP_LOAD - n_uniform_load
         load_uniform = sample_top_load(n_uniform_load)
         load_residual = sample_surface_residual_based(
             n_residual_load, config.H,
@@ -300,8 +318,8 @@ def get_data(prev_data=None, residuals=None):
         top_load = torch.cat([load_uniform, load_residual], dim=0)
         
         # Top Free: half uniform, half residual-based
-        n_uniform_free = config.N_BOUNDARY // 2
-        n_residual_free = config.N_BOUNDARY - n_uniform_free
+        n_uniform_free = config.N_TOP_FREE // 2
+        n_residual_free = config.N_TOP_FREE - n_uniform_free
         free_uniform = sample_top_free(n_uniform_free)
         free_residual = sample_surface_residual_based(
             n_residual_free, config.H,
@@ -311,8 +329,8 @@ def get_data(prev_data=None, residuals=None):
         top_free = torch.cat([free_uniform, free_residual], dim=0)
         
         # Bottom: half uniform, half residual-based
-        n_uniform_bot = config.N_BOUNDARY // 2
-        n_residual_bot = config.N_BOUNDARY - n_uniform_bot
+        n_uniform_bot = config.N_BOTTOM // 2
+        n_residual_bot = config.N_BOTTOM - n_uniform_bot
         bot_uniform = sample_bottom(n_uniform_bot)
         bot_residual = sample_surface_residual_based(
             n_residual_bot, 0.0,
@@ -322,116 +340,21 @@ def get_data(prev_data=None, residuals=None):
         
     else:
         # Uniform sampling (initial or when no residuals provided)
-        interior = sample_domain(config.N_INTERIOR, z_min, z_max)
-        bc_sides = sample_boundaries(config.N_BOUNDARY, z_min, z_max)
-        top_load = sample_top_load(config.N_BOUNDARY)
-        top_free = sample_top_free(config.N_BOUNDARY)
-        bot_free = sample_bottom(config.N_BOUNDARY)
+        interior_uniform = sample_domain(n_interior, z_min, z_max)
+        if n_patch > 0:
+            interior_patch = sample_domain_under_patch(n_patch, z_min, z_max)
+            interior = torch.cat([interior_uniform, interior_patch], dim=0)
+        else:
+            interior = interior_uniform
+        bc_sides = sample_boundaries(config.N_SIDES, z_min, z_max)
+        top_load = sample_top_load(config.N_TOP_LOAD)
+        top_free = sample_top_free(config.N_TOP_FREE)
+        bot_free = sample_bottom(config.N_BOTTOM)
     
-
     return {
-        'interior': interior,  # Removed list wrapping for consistency
-        'sides': bc_sides,     # Removed list wrapping
+        'interior': [interior],
+        'sides': [bc_sides],
         'top_load': top_load,
         'top_free': top_free,
         'bottom': bot_free
     }
-
-def get_fea_samples(n_samples=config.N_DATA):
-    """
-    Load FEA solution and sample sparse points for supervised learning.
-    
-    Args:
-        n_samples: Number of points to sample
-        
-    Returns:
-        X_data: Tensor of coordinates (N, 3)
-        U_data: Tensor of true displacements (N, 3)
-    """
-    try:
-        fem_data = np.load("fea_solution.npy", allow_pickle=True).item()
-        X_fea = fem_data['x'].flatten()
-        Y_fea = fem_data['y'].flatten()
-        Z_fea = fem_data['z'].flatten()
-        U_fea = fem_data['u'].reshape(-1, 3)
-        
-        # Combine coordinates
-        coords = np.stack([X_fea, Y_fea, Z_fea], axis=1)
-        
-        # Filter for valid points (exclude NaNs if any, though FEA usually clean)
-        # Sample random indices
-        total_points = coords.shape[0]
-        if n_samples > total_points:
-            n_samples = total_points
-            
-        indices = np.random.choice(total_points, n_samples, replace=False)
-        
-        X_data = torch.tensor(coords[indices], dtype=torch.float32)
-        U_data = torch.tensor(U_fea[indices], dtype=torch.float32)
-        
-        return X_data, U_data
-        
-    except FileNotFoundError:
-        print("Warning: 'fea_solution.npy' not found. Returning empty tensors for data loss.")
-        return torch.empty(0, 3), torch.empty(0, 3)
-
-class PINNDataset(torch.utils.data.Dataset):
-    """
-    Custom Dataset for PINN training with mini-batches.
-    """
-    def __init__(self, data_dict, fea_data=None):
-        self.interior = data_dict['interior']
-        self.sides = data_dict['sides']
-        self.top_load = data_dict['top_load']
-        self.top_free = data_dict['top_free']
-        self.bottom = data_dict['bottom']
-        
-        # Hybrid Data
-        if fea_data is not None:
-            self.x_data, self.u_data = fea_data
-            self.has_data = True
-        else:
-            self.x_data = torch.empty(0, 3)
-            self.u_data = torch.empty(0, 3)
-            self.has_data = False
-            
-        # Determine length based on the largest dataset (interior)
-        # We will cycle through smaller datasets
-        self.n_samples = self.interior.shape[0]
-        self.n_sides = self.sides.shape[0]
-        self.n_load = self.top_load.shape[0]
-        self.n_free = self.top_free.shape[0]
-        self.n_bottom = self.bottom.shape[0]
-        self.n_fea = self.x_data.shape[0] if self.has_data else 1
-
-    def __len__(self):
-        return self.n_samples
-
-    def __getitem__(self, idx):
-        # Interior point
-        x_int = self.interior[idx]
-        
-        # Boundary points (modulo indexing to cycle)
-        x_side = self.sides[idx % self.n_sides]
-        x_load = self.top_load[idx % self.n_load]
-        x_free = self.top_free[idx % self.n_free]
-        x_bot = self.bottom[idx % self.n_bottom]
-        
-        # FEA Data point
-        if self.has_data:
-            x_dat = self.x_data[idx % self.n_fea]
-            u_dat = self.u_data[idx % self.n_fea]
-        else:
-            x_dat = torch.zeros(3)
-            u_dat = torch.zeros(3)
-            
-        return {
-            'interior': x_int,
-            'sides': x_side,
-            'top_load': x_load,
-            'top_free': x_free,
-            'bottom': x_bot,
-            'x_data': x_dat,
-            'u_data': u_dat
-        }
-

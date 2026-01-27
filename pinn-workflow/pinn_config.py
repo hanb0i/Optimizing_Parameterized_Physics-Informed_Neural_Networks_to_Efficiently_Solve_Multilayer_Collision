@@ -1,4 +1,3 @@
-
 import torch
 import numpy as np
 
@@ -6,10 +5,14 @@ import numpy as np
 Lx = 1.0
 Ly = 1.0
 H = 0.1  # Total height
+# Single layer (homogeneous material)
+# z goes from 0 to H
 Layer_Interfaces = [0.0, H]
 
 # --- Material Properties ---
-E_vals = [1.0]  # Normalized
+# Young's Modulus (E) and Poisson's Ratio (nu)
+# Single layer to match FEM
+E_vals = [1.0] # Normalized
 nu_vals = [0.3]
 
 def get_lame_params(E, nu):
@@ -20,41 +23,61 @@ def get_lame_params(E, nu):
 Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 
 # --- Loading ---
-p0 = 1.0  # Load magnitude
-LOAD_PATCH_X = [Lx/3, 2*Lx/3]
-LOAD_PATCH_Y = [Ly/3, 2*Ly/3]
+p0 = 1.0 # Load magnitude
+
+# --- Unit-consistent loss scaling ---
+# div(sigma) has units of stress/length; scale by a characteristic length.
+PDE_LENGTH_SCALE = H
+
+# --- Boundary condition handling ---
+# Use hard mask early for shape, then switch to soft BCs for magnitude.
+USE_HARD_SIDE_BC = True
+HARD_BC_EPOCHS = 1000
+
+# Load patch boundaries (normalized coordinates)
+LOAD_PATCH_X = [Lx/3, 2*Lx/3]  # [0.333, 0.667]
+LOAD_PATCH_Y = [Ly/3, 2*Ly/3]  # [0.333, 0.667]
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
-EPOCHS_SOAP = 2000
-EPOCHS_SSBFGS = 30
-
+EPOCHS_ADAM = 2000 # Increased to enforce load and reduce underfit
+EPOCHS_LBFGS = 300 # L-BFGS fine-tuning steps; resampling here should help convergence.
 # SOAP optimizer
-SOAP_PRECONDITION_FREQUENCY = 10
-
-# SciPy self-scaled BFGS optimizer
-SS_BFGS_METHOD = "BFGS"
-SS_BFGS_VARIANT = "SSBFGS_AB"
-SS_BFGS_MAXITER = 1
-SS_BFGS_GTOL = 0.0
-SS_BFGS_INITIAL_SCALE = False
-
-
-# Loss Weights
+SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
+#Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
-    'pde': 0.0,
-    'bc': 1.0,
-    'load': 1.0,
-    'data': 1.0,
+    'pde': 1.0,    # Increased from 1.0
+    'bc': 0.7,      # Slightly softer sides so load can gather more budget
+    'load': 1.0, # Heavily increased to match traction target
+    'energy': 1.0, # Energy/compliance balance
+    'interface_u': 1.0 
 }
-
+# Loss weight ramp: load-first to raise displacement while preserving shape.
+WEIGHT_RAMP_EPOCHS = 0
+LOAD_WEIGHT_START = WEIGHTS['load']
+PDE_WEIGHT_START = WEIGHTS['pde']
+ENERGY_WEIGHT_START = WEIGHTS['energy']
+# Force soft side boundary conditions from the beginning.
+FORCE_SOFT_SIDE_BC_FROM_START = True
+SOFT_MODE_PDE_WEIGHT_SCALE = 3.0
+SOFT_MODE_LOAD_WEIGHT_SCALE = 1.0
 # Sampling
-N_INTERIOR = 10000
-N_BOUNDARY = 2000
-N_DATA = 1000  # Number of sparse FEA data points
+N_INTERIOR = 15000 # Per layer
+N_SIDES = 2000  # Clamped side faces
+N_TOP_LOAD = 6000  # Load patch (more points to boost displacement)
+N_TOP_FREE = 2000  # Top free surface
+N_BOTTOM = 2000  # Bottom free surface
+UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
 
-# Mini-batching
-BATCH_SIZE = 4096
+#Resampling/perturbation control
+SAMPLING_NOISE_SCALE = 0.08  # Larger perturbations widen coverage while still sampling residual-rich zones.
+
+# Auxiliary load-patch average displacement penalty
+LOAD_PATCH_UZ_TARGET = -0.05  # Encourage the mean vertical deflection on the load patch
+LOAD_PATCH_UZ_WEIGHT = 0.02   # Keep the auxiliary penalty small so shape stays intact
+
+# Fourier Features
+FOURIER_DIM = 0 # Number of Fourier frequencies
+FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 
 # Output Scaling
-OUTPUT_SCALE = 1.00
