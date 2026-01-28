@@ -65,8 +65,10 @@ def train():
         Z_fea = fem_data['z']
         U_fea = fem_data['u']
         
-        # Prepare FEM evaluation grid
+        # Prepare FEM evaluation grid (append base E for parametric PINN)
         pts_fea = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
+        e_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
+        pts_fea = np.hstack([pts_fea, e_ones])
         pts_fea_tensor = torch.tensor(pts_fea, dtype=torch.float32).to(device)
         u_fea_flat = U_fea.reshape(-1, 3)
         

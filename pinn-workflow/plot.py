@@ -39,6 +39,8 @@ def plot_results():
     
     # Flatten
     pts = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
+    e_ones = np.ones((pts.shape[0], 1)) * config.E_vals[0]
+    pts = np.hstack([pts, e_ones])
     pts_t = torch.tensor(pts, dtype=torch.float32).to(device)
     
     with torch.no_grad():
@@ -64,6 +66,8 @@ def plot_results():
     Y_slice = np.ones_like(X_slice) * y_slice
     
     pts_slice = np.stack([X_slice.ravel(), Y_slice.ravel(), Z_slice.ravel()], axis=1)
+    e_ones = np.ones((pts_slice.shape[0], 1)) * config.E_vals[0]
+    pts_slice = np.hstack([pts_slice, e_ones])
     pts_slice_t = torch.tensor(pts_slice, dtype=torch.float32).to(device)
     
     # We need to manually assign points to layers to query correctly
@@ -77,6 +81,8 @@ def plot_results():
     X1, Z1 = np.meshgrid(x, z1)
     Y1 = np.ones_like(X1) * y_slice
     p1 = np.stack([X1.ravel(), Y1.ravel(), Z1.ravel()], axis=1)
+    e1 = np.ones((p1.shape[0], 1)) * config.E_vals[0]
+    p1 = np.hstack([p1, e1])
     p1_t = torch.tensor(p1, dtype=torch.float32).to(device)
     
     with torch.no_grad():
@@ -88,6 +94,8 @@ def plot_results():
     X2, Z2 = np.meshgrid(x, z2)
     Y2 = np.ones_like(X2) * y_slice
     p2 = np.stack([X2.ravel(), Y2.ravel(), Z2.ravel()], axis=1)
+    e2 = np.ones((p2.shape[0], 1)) * config.E_vals[0]
+    p2 = np.hstack([p2, e2])
     p2_t = torch.tensor(p2, dtype=torch.float32).to(device)
     
     with torch.no_grad():
@@ -99,6 +107,8 @@ def plot_results():
     X3, Z3 = np.meshgrid(x, z3)
     Y3 = np.ones_like(X3) * y_slice
     p3 = np.stack([X3.ravel(), Y3.ravel(), Z3.ravel()], axis=1)
+    e3 = np.ones((p3.shape[0], 1)) * config.E_vals[0]
+    p3 = np.hstack([p3, e3])
     p3_t = torch.tensor(p3, dtype=torch.float32).to(device)
     
     with torch.no_grad():

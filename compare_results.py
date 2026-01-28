@@ -56,9 +56,11 @@ def compare():
     pinn.eval()
     
     pts = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1) # (N, 3)
+    e_ones = np.ones((pts.shape[0], 1)) * config.E_vals[0]
+    pts = np.hstack([pts, e_ones])
     
     # Single layer - query all points at once
-    U_pinn_flat = np.zeros_like(pts)
+    U_pinn_flat = np.zeros((pts.shape[0], 3), dtype=pts.dtype)
     
     with torch.no_grad():
         pts_tensor = torch.tensor(pts, dtype=torch.float32).to(device)

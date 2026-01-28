@@ -48,6 +48,8 @@ def main():
     print("PINN model loaded")
 
     pts = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
+    e_ones = np.ones((pts.shape[0], 1)) * config.E_vals[0]
+    pts = np.hstack([pts, e_ones])
     with torch.no_grad():
         pts_tensor = torch.tensor(pts, dtype=torch.float32).to(device)
         U_pinn_flat = pinn(pts_tensor, 0).cpu().numpy()

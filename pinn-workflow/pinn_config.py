@@ -14,6 +14,9 @@ Layer_Interfaces = [0.0, H]
 # Single layer to match FEM
 E_vals = [1.0] # Normalized
 nu_vals = [0.3]
+# Parameterized PINN settings (do not alter baseline values)
+E_RANGE = [1.0, 10.0]
+PARAM_DIM = 1
 
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))

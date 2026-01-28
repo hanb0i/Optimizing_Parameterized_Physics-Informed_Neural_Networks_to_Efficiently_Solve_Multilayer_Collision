@@ -6,8 +6,8 @@ class LayerNet(nn.Module):
     def __init__(self, hidden_layers=2, hidden_units=32, activation=nn.Tanh()):
         super().__init__()
         layers = []
-        # Input: x, y, z (3 coords)
-        input_dim = 3
+        # Input: x, y, z, E (4 coords)
+        input_dim = 4
         current_dim = input_dim
         
         layers.append(nn.Linear(current_dim, hidden_units))
@@ -45,26 +45,28 @@ class LayerNet(nn.Module):
         z_coord = x[:, 2:3]
         e_param = x[:, 3:4]
         
-        e_norm = (e_param - config.E_RANGE[0]) / (config.E_RANGE[1] - config.E_RANGE[0])
+        e_min, e_max = config.E_RANGE
+        e_span = (e_max - e_min) if (e_max - e_min) != 0 else 1.0
+        e_norm = (e_param - e_min) / e_span
         
         x_scaled = torch.cat([x_coord, y_coord, z_coord * 10.0, e_norm], dim=1)
         
         u_raw = self.net(x_scaled)
         
-        # Hard Constraint for Clamped Sides (x=0, x=1, y=0, y=1)
-        # Mask M(x,y) = x(1-x)y(1-y)
-        # Normalized so max value is ~1 (at center x=0.5, y=0.5, val=0.0625 -> *16)
-        x_c = x[:, 0:1]
-        y_c = x[:, 1:2]
+        if config.USE_HARD_SIDE_BC:
+            # Hard Constraint for Clamped Sides (x=0, x=1, y=0, y=1)
+            # Mask M(x,y) = x(1-x)y(1-y)
+            # Normalized so max value is ~1 (at center x=0.5, y=0.5, val=0.0625 -> *16)
+            x_c = x[:, 0:1]
+            y_c = x[:, 1:2]
+            
+            # We assume domain is [0,1]x[0,1] based on config.
+            # If config changed Lx, Ly, this should be dynamic, but for now hardcoded matches config.
+            mask = x_c * (1.0 - x_c) * y_c * (1.0 - y_c) * 16.0
+            u_raw = u_raw * mask
         
-        # We assume domain is [0,1]x[0,1] based on config.
-        # If config changed Lx, Ly, this should be dynamic, but for now hardcoded matches config.
-        mask = x_c * (1.0 - x_c) * y_c * (1.0 - y_c) * 4.0
-        
-        # Apply mask
-        # Apply mask and Physics-Informed Scaling (1/E)
-        # Linear elasticity: u ~ 1/E. Scaling output by 1/E simplifies learning to a reference shape.
-        return (u_raw * mask) / e_param
+        # Physics-informed scaling: u ~ 1/E for linear elasticity
+        return u_raw / e_param
 
 class MultiLayerPINN(nn.Module):
     def __init__(self):
@@ -79,3 +81,6 @@ class MultiLayerPINN(nn.Module):
     def predict_all(self, x):
         # Direct prediction for single layer
         return self.layer(x)
+
+    def set_hard_bc(self, use_hard):
+        config.USE_HARD_SIDE_BC = bool(use_hard)

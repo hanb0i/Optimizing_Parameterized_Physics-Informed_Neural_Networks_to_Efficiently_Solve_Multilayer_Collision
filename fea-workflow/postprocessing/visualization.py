@@ -42,6 +42,8 @@ def plot_pinn_results(model, config, device, save_path="."):
     Z = np.ones_like(X) * H
     
     pts = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
+    e_ones = np.ones((pts.shape[0], 1)) * config['material']['E']
+    pts = np.hstack([pts, e_ones])
     pts_t = torch.tensor(pts, dtype=torch.float32).to(device)
     
     with torch.no_grad():
@@ -66,7 +68,12 @@ def plot_comparison(u_fea, params_fea, pinn_model, config, device, save_path="."
     uz_fea_top = u_grid_fea[:, :, -1, 2]
     
     # PINN Prediction on FEA grid
-    pts_top = np.stack([X_fea.ravel(), Y_fea.ravel(), np.ones_like(X_fea.ravel())*config['geometry']['H']], axis=1)
+    pts_top = np.stack(
+        [X_fea.ravel(), Y_fea.ravel(), np.ones_like(X_fea.ravel()) * config['geometry']['H']],
+        axis=1,
+    )
+    e_ones = np.ones((pts_top.shape[0], 1)) * config['material']['E']
+    pts_top = np.hstack([pts_top, e_ones])
     pts_top_t = torch.tensor(pts_top, dtype=torch.float32).to(device)
     
     pinn_model.eval()
