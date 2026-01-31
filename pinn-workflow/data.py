@@ -360,7 +360,7 @@ def get_data(prev_data=None, residuals=None):
         'bottom': bot_free
     }
 
-def get_fea_samples(n_samples=config.N_DATA):
+def get_fea_samples(n_samples=None):
     """
     Load FEA solution and sample sparse points for supervised learning.
     
@@ -371,6 +371,9 @@ def get_fea_samples(n_samples=config.N_DATA):
         X_data: Tensor of coordinates (N, 3)
         U_data: Tensor of true displacements (N, 3)
     """
+    if n_samples is None:
+        n_samples = getattr(config, "N_DATA", 0)
+
     try:
         fem_data = np.load("fea_solution.npy", allow_pickle=True).item()
         X_fea = fem_data['x'].flatten()
@@ -457,4 +460,3 @@ class PINNDataset(torch.utils.data.Dataset):
             'x_data': x_dat,
             'u_data': u_dat
         }
-
