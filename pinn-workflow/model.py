@@ -91,7 +91,12 @@ class MultiLayerPINN(nn.Module):
     def __init__(self):
         super().__init__()
         # Single network for homogeneous material
-        self.layer = LayerNet(fourier_dim=config.FOURIER_DIM, fourier_scale=config.FOURIER_SCALE)
+        self.layer = LayerNet(
+            hidden_layers=getattr(config, 'LAYERS', 4),
+            hidden_units=getattr(config, 'NEURONS', 64),
+            fourier_dim=config.FOURIER_DIM, 
+            fourier_scale=config.FOURIER_SCALE
+        )
         
     def forward(self, x, layer_idx=0):
         # layer_idx kept for compatibility but not used

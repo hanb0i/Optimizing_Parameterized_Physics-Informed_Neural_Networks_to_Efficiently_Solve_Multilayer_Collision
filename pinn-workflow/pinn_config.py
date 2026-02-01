@@ -41,6 +41,10 @@ HARD_BC_EPOCHS = 1000
 LOAD_PATCH_X = [Lx/3, 2*Lx/3]  # [0.333, 0.667]
 LOAD_PATCH_Y = [Ly/3, 2*Ly/3]  # [0.333, 0.667]
 
+# --- Network Architecture ---
+LAYERS = 4
+NEURONS = 64
+
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
 EPOCHS_ADAM = 2000 # Increased to enforce load and reduce underfit
@@ -49,11 +53,13 @@ EPOCHS_LBFGS = 300 # L-BFGS fine-tuning steps; resampling here should help conve
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
-    'pde': 1.0,    # Increased from 1.0
-    'bc': 0.7,      # Slightly softer sides so load can gather more budget
-    'load': 1.0, # Heavily increased to match traction target
-    'energy': 1.0, # Energy/compliance balance
-    'interface_u': 1.0 
+    'pde': 0.1,    # Relaxed PDE to allow data to drive compliance
+    'bc': 1.0,      # Standard
+    'load': 1.0, # Standard
+    'energy': 0.0, # DISABLED
+    'interface_u': 1.0,
+    'interface_u': 1.0,
+    'data': 10.0   # Stronger supervision to match FEA shape/magnitude
 }
 # Loss weight ramp: load-first to raise displacement while preserving shape.
 WEIGHT_RAMP_EPOCHS = 0
@@ -84,3 +90,7 @@ FOURIER_DIM = 0 # Number of Fourier frequencies
 FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 
 # Output Scaling
+
+# Hybrid / Parametric Training Data
+N_DATA_POINTS = 5000  # Increased for dense coverage
+DATA_E_VALUES = np.linspace(1.0, 10.0, 10).tolist() # [1.0, 2.0, ..., 10.0]

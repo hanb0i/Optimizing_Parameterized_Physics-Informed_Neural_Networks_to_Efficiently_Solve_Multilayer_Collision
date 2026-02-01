@@ -99,9 +99,11 @@ def compute_loss(model, data, device, weights=None):
     lm = lm.unsqueeze(2)
     mu = mu.unsqueeze(2)
     
-    # Predict compliance-scaled displacement v = E * u
-    v = model(x_int, 0)
-    u = v / E_local
+    # Predict displacement u = v / E to handle parameter range
+    # The network predicts 'v' (stress-like potential), we divide by E to get physical u.
+    v_int = model(x_int, 0)
+    u = v_int / E_local
+    
     grad_u = gradient(u, x_int)
     eps = strain(grad_u)
     sig = stress(eps, lm, mu)
@@ -120,7 +122,9 @@ def compute_loss(model, data, device, weights=None):
     
     # --- 2. Dirichlet BCs (Clamped Sides) ---
     x_side = data['sides'][0].to(device)
-    u_side = model(x_side, 0)
+    E_side = x_side[:, 3:4]
+    v_side = model(x_side, 0)
+    u_side = v_side / E_side # Scale BC prediction too
     bc_loss = torch.mean(u_side**2)
     losses['bc_sides'] = bc_loss
     total_loss += weights['bc'] * bc_loss
@@ -137,7 +141,7 @@ def compute_loss(model, data, device, weights=None):
     mu = mu.unsqueeze(2)
     
     v_top = model(x_top_load, 0)
-    u_top = v_top / E_local_load
+    u_top = v_top / E_local_load # Scaling
     grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
     
@@ -201,7 +205,28 @@ def compute_loss(model, data, device, weights=None):
     T_bot = -sig_bot[:, :, 2]
     loss_bot = torch.mean(T_bot**2)
     losses['free_bot'] = loss_bot
+    losses['free_bot'] = loss_bot
     total_loss += weights['bc'] * loss_bot
+    
+    # --- 4. Supervised Data Loss (Hybrid/Parametric) ---
+    if 'x_data' in data and 'u_data' in data:
+        x_data = data['x_data'].to(device)
+        u_data = data['u_data'].to(device)
+        
+        # Predict v directly (Stress Potential)
+        v_pred = model(x_data, 0)
+        E_data = x_data[:, 3:4]
+        
+        # Normalize Ground Truth: v_target = u_data * E
+        # This ensures the loss magnitude is balanced across E=1 and E=10
+        v_target = u_data * E_data
+        
+        loss_data = torch.mean((v_pred - v_target)**2)
+        losses['data'] = loss_data
+        
+        # specific weight for data or default high weight
+        w_data = weights.get('data', 100.0) 
+        total_loss += w_data * loss_data
     
     losses['total'] = total_loss
     return total_loss, losses
@@ -225,7 +250,8 @@ def compute_residuals(model, data, device):
     lm = lm.unsqueeze(2)
     mu = mu.unsqueeze(2)
     
-    u = model(x_int, 0)
+    v_int = model(x_int, 0)
+    u = v_int / E_local
     grad_u = gradient(u, x_int)
     eps = strain(grad_u)
     sig = stress(eps, lm, mu)
@@ -237,7 +263,9 @@ def compute_residuals(model, data, device):
     
     # --- BC Sides Residuals ---
     x_side = data['sides'][0].to(device)
-    u_side = model(x_side, 0)
+    E_side = x_side[:, 3:4]
+    v_side = model(x_side, 0)
+    u_side = v_side / E_side
     bc_residual = torch.sqrt(torch.sum(u_side**2, dim=1))
     residuals['sides'] = bc_residual.cpu()
     
@@ -251,7 +279,8 @@ def compute_residuals(model, data, device):
     lm = lm.unsqueeze(2)
     mu = mu.unsqueeze(2)
     
-    u_top = model(x_top_load, 0)
+    v_top = model(x_top_load, 0)
+    u_top = v_top / E_local_load
     grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
     T = sig_top[:, :, 2]
@@ -275,7 +304,8 @@ def compute_residuals(model, data, device):
     lm_free = lm_free.unsqueeze(2)
     mu_free = mu_free.unsqueeze(2)
     
-    u_top_free = model(x_top_free, 0)
+    v_top_free = model(x_top_free, 0)
+    u_top_free = v_top_free / E_local_free
     grad_u_free = gradient(u_top_free, x_top_free)
     sig_top_free = stress(strain(grad_u_free), lm_free, mu_free)
     T_free = sig_top_free[:, :, 2]
@@ -292,7 +322,8 @@ def compute_residuals(model, data, device):
     lm_bot = lm_bot.unsqueeze(2)
     mu_bot = mu_bot.unsqueeze(2)
     
-    u_bot = model(x_bot, 0)
+    v_bot = model(x_bot, 0)
+    u_bot = v_bot / E_local_bot
     grad_u_bot = gradient(u_bot, x_bot)
     sig_bot = stress(strain(grad_u_bot), lm_bot, mu_bot)
     T_bot = -sig_bot[:, :, 2]

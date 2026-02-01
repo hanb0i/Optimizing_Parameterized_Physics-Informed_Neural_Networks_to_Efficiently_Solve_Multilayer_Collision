@@ -80,6 +80,16 @@ def train():
     
     # Data Container
     training_data = data.get_data()
+
+    # Load and attach Parametric/Hybrid Supervision Data
+    if hasattr(config, "N_DATA_POINTS") and hasattr(config, "DATA_E_VALUES"):
+        print(f"Loading hybrid supervision data (N={config.N_DATA_POINTS}, E={config.DATA_E_VALUES})...")
+        x_data, u_data = data.load_fem_supervision_data()
+        training_data['x_data'] = x_data
+        training_data['u_data'] = u_data
+        print(f"Attached {len(x_data)} supervision points to training data.")
+    else:
+        print("Parametric data config not found, skipping hybrid data loading.")
     
     # History - store all loss components separately for each optimizer
     adam_history = {
@@ -155,7 +165,12 @@ def train():
             # Compute FEM error every 100 epochs
             if fem_available:
                 with torch.no_grad():
-                    u_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
+                    v_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
+                    # Apply compliance scaling u = v / E
+                    # E is the 4th column of input
+                    E_vals = pts_fea[:, 3:4] # numpy array from line 71
+                    u_pinn_flat = v_pinn_flat / E_vals
+                     
                     diff = np.abs(u_pinn_flat - u_fea_flat)
                     mae = np.mean(diff)
                     max_err = np.max(diff)
@@ -220,7 +235,10 @@ def train():
         # Compute FEM error and print
         if fem_available:
             with torch.no_grad():
-                u_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
+                v_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
+                # Apply compliance scaling
+                E_vals = pts_fea[:, 3:4]
+                u_pinn_flat = v_pinn_flat / E_vals
                 diff = np.abs(u_pinn_flat - u_fea_flat)
                 mae = np.mean(diff)
                 max_err = np.max(diff)
