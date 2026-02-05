@@ -90,7 +90,7 @@ def train():
         print(f"Attached {len(x_data)} supervision points to training data.")
     else:
         print("Parametric data config not found, skipping hybrid data loading.")
-    
+ 
     # History - store all loss components separately for each optimizer
     adam_history = {
         'total': [],
@@ -135,7 +135,6 @@ def train():
                 if not use_hard_bc:
                     print("Switching to soft side BCs (mask off) to lift deflection.")
         
-        # Periodic data refresh with residual-based adaptive sampling
         if epoch % 500 == 0 and epoch > 0:
             # Compute residuals for adaptive sampling
             residuals = physics.compute_residuals(pinn, training_data, device)
@@ -169,7 +168,7 @@ def train():
                     # Apply compliance scaling u = v / E
                     # E is the 4th column of input
                     E_vals = pts_fea[:, 3:4] # numpy array from line 71
-                    u_pinn_flat = v_pinn_flat / E_vals
+                    u_pinn_flat = v_pinn_flat / (E_vals)
                      
                     diff = np.abs(u_pinn_flat - u_fea_flat)
                     mae = np.mean(diff)
@@ -238,7 +237,7 @@ def train():
                 v_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
                 # Apply compliance scaling
                 E_vals = pts_fea[:, 3:4]
-                u_pinn_flat = v_pinn_flat / E_vals
+                u_pinn_flat = v_pinn_flat / (E_vals)
                 diff = np.abs(u_pinn_flat - u_fea_flat)
                 mae = np.mean(diff)
                 max_err = np.max(diff)

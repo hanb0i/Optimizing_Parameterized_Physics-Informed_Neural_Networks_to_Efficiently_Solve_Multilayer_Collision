@@ -99,12 +99,17 @@ class MultiLayerPINN(nn.Module):
         )
         
     def forward(self, x, layer_idx=0):
-        # layer_idx kept for compatibility but not used
-        return self.layer(x)
+        # x: (N, 4) -> [x, y, z, E]
+        
+        # 1. Compute the normalized potential/shape 'v'
+        v = self.layer(x)
+        
+        # Return v directly. Physics layer will handle u = v / E
+        return v
 
     def predict_all(self, x):
-        # Direct prediction for single layer
-        return self.layer(x)
+        # Consistent prediction
+        return self.forward(x)
 
     def set_hard_bc(self, use_hard):
         config.USE_HARD_SIDE_BC = bool(use_hard)

@@ -89,7 +89,7 @@ def main():
             v_pinn_flat = pinn(input_tensor).cpu().numpy()
             
         # Physics compliance scaling: u = v / E
-        u_pinn_flat = v_pinn_flat / E_val
+        u_pinn_flat = v_pinn_flat / (E_val)
             
         u_z_pinn_top = u_pinn_flat[:, 2].reshape(ny, nx)
         

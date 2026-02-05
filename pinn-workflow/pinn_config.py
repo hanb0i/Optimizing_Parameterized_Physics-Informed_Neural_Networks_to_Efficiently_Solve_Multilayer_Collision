@@ -48,7 +48,7 @@ NEURONS = 64
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
 EPOCHS_ADAM = 2000 # Increased to enforce load and reduce underfit
-EPOCHS_LBFGS = 300 # L-BFGS fine-tuning steps; resampling here should help convergence.
+EPOCHS_LBFGS = 300 # Increased to 300 per user request (fast training)
 # SOAP optimizer
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
@@ -58,8 +58,9 @@ WEIGHTS = {
     'load': 5.0, # Optimal load weight
     'energy': 0.63, # Per user request
     'interface_u': 1.0,
-    'data': 1.0   # Normalized loss works best with balanced weight
+    'data': 1.0   # Disabled per user request (Pure Physics High BFGS)
 }
+
 # Loss weight ramp: load-first to raise displacement while preserving shape.
 WEIGHT_RAMP_EPOCHS = 0
 LOAD_WEIGHT_START = WEIGHTS['load']
@@ -87,8 +88,6 @@ LOAD_PATCH_UZ_WEIGHT = 0.02   # Keep the auxiliary penalty small so shape stays 
 # Fourier Features
 FOURIER_DIM = 0 # Number of Fourier frequencies
 FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
-
-# Output Scaling
 
 # Hybrid / Parametric Training Data
 N_DATA_POINTS = 5000  # Increased for dense coverage
