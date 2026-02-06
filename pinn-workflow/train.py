@@ -65,15 +65,10 @@ def train():
         Z_fea = fem_data['z']
         U_fea = fem_data['u']
         
-        # Prepare FEM evaluation grid [x, y, zeta, E, H]
-        # FEA data is at physical H = 0.1. Normalized z (zeta) = z / 0.1
-        pts_fea = np.stack([
-            X_fea.ravel(), 
-            Y_fea.ravel(), 
-            Z_fea.ravel() / 0.1, # Normalize z to zeta
-            np.ones_like(X_fea.ravel()) * config.E_vals[0], # Baseline E
-            np.ones_like(X_fea.ravel()) * 0.1 # Baseline H
-        ], axis=1)
+        # Prepare FEM evaluation grid (append base E for parametric PINN)
+        pts_fea = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
+        e_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
+        pts_fea = np.hstack([pts_fea, e_ones])
         pts_fea_tensor = torch.tensor(pts_fea, dtype=torch.float32).to(device)
         u_fea_flat = U_fea.reshape(-1, 3)
         
@@ -202,10 +197,9 @@ def train():
     pinn.set_hard_bc(False)
     optimizer_lbfgs = optim.LBFGS(
         pinn.parameters(),
-        lr=0.1,  # Reduced from 1.0 to prevent divergence with parametric gradients
+        lr=1.0,
         max_iter=1,
         line_search_fn="strong_wolfe",
-        history_size=50
     )
         
     num_lbfgs_steps = config.EPOCHS_LBFGS
@@ -213,20 +207,15 @@ def train():
     print("Resampling with residual-based adaptive sampling each outer step.")
     
     for i in range(num_lbfgs_steps):
-        # Resample collocation points with residual-based adaptive sampling every 50 steps
-        # This prevents the loss landscape from changing too rapidly for L-BFGS
-        if i % 50 == 0:
-            residuals = physics.compute_residuals(pinn, training_data, device)
-            training_data = data.get_data(prev_data=training_data, residuals=residuals)
-            print(f"  L-BFGS Step {i}: Resampled data points.")
+        # Resample collocation points with residual-based adaptive sampling
+        residuals = physics.compute_residuals(pinn, training_data, device)
+        training_data = data.get_data(prev_data=training_data, residuals=residuals)
         
         step_start = time.time()
         def closure():
             optimizer_lbfgs.zero_grad()
             loss_val, _ = physics.compute_loss(pinn, training_data, device, weights=config.WEIGHTS)
             loss_val.backward()
-            # Gradient clipping to prevent exploding gradients from 1/H terms
-            torch.nn.utils.clip_grad_norm_(pinn.parameters(), max_norm=1.0)
             return loss_val
 
         loss_val = optimizer_lbfgs.step(closure)

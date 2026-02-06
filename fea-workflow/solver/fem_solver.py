@@ -109,8 +109,8 @@ def solve_fem(cfg):
         x_norm = (x - patch_x_min) / (patch_x_max - patch_x_min)
         y_norm = (y - patch_y_min) / (patch_y_max - patch_y_min)
         
-        # Uniform Boxcar Mask (Matches PINN)
-        return 1.0
+        # Quadratic falloff
+        return 16.0 * x_norm * (1.0 - x_norm) * y_norm * (1.0 - y_norm)
     
     for j in range(ny):
         if y_nodes[j] >= patch_y_min and y_nodes[j] <= patch_y_max:

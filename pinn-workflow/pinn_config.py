@@ -14,10 +14,9 @@ Layer_Interfaces = [0.0, H]
 # Single layer to match FEM
 E_vals = [1.0] # Normalized
 nu_vals = [0.3]
-# Parameterized PINN settings
+# Parameterized PINN settings (do not alter baseline values)
 E_RANGE = [1.0, 10.0]
-H_RANGE = [0.1, 1.0] # New Thickness Parameter
-PARAM_DIM = 2 # (E, H)
+PARAM_DIM = 1
 
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
@@ -48,8 +47,8 @@ NEURONS = 64
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
-EPOCHS_ADAM = 1000 # Increased to enforce load and reduce underfit
-EPOCHS_LBFGS = 300 # 300 for efficiency
+EPOCHS_ADAM = 2000 # Increased to enforce load and reduce underfit
+EPOCHS_LBFGS = 300 # Increased to 300 per user request (fast training)
 # SOAP optimizer
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 

@@ -101,68 +101,31 @@ def compute_loss(model, data, device, weights=None):
     
     # Predict displacement u = v / E to handle parameter range
     # The network predicts 'v' (stress-like potential), we divide by E to get physical u.
+    # Predict displacement u = v / E^1.1 (Power Law Correction)
     v_int = model(x_int, 0)
     u = v_int / (E_local)
     
-    # Gradient with respect to [x, y, zeta]
-    grad_u_zeta = gradient(u, x_int)
-    
-    # Transform to physical gradients [dx, dy, dz]
-    # dz = 1/H * dzeta
-    H_local = x_int[:, 4:5].unsqueeze(2) # (N, 1, 1) to match (N, 3, 3)
-    grad_u = grad_u_zeta.clone()
-    grad_u[:, :, 2] = grad_u_zeta[:, :, 2] / H_local.squeeze(2)
-    
+    grad_u = gradient(u, x_int)
     eps = strain(grad_u)
     sig = stress(eps, lm, mu)
     div_sigma = divergence(sig, x_int)
-    # Note: divergence() also needs to handle d/dz -> (1/H) d/dzeta
-    # Passing H to divergence or handling it inside. 
-    # Let's re-implement divergence to be aware of H.
     
-    # Actually, divergence() calls autograd.grad on sig_ij relative to x.
-    # We should scale the 3rd component of that gradient.
-    
-    # --- Redefining Equilibrium with H scaling ---
-    div_sig = torch.zeros(x_int.shape[0], 3, device=device)
-    for i in range(3):
-        div_i = 0
-        for j in range(3):
-            sig_ij = sig[:, i, j].unsqueeze(1)
-            grad_sig_ij = autograd.grad(
-                sig_ij, x_int,
-                grad_outputs=torch.ones_like(sig_ij),
-                create_graph=True,
-                retain_graph=True
-            )[0]
-            # Chain rule: d/dz = (1/H) d/dzeta
-            h_val = x_int[:, 4:5]
-            if j == 2:
-                div_i += grad_sig_ij[:, j] / h_val.squeeze()
-            else:
-                div_i += grad_sig_ij[:, j]
-        div_sig[:, i] = div_i
-
     # Equilibrium: -div(sigma) = 0 (scale to stress units)
-    # Using H as the length scale for units
-    h_val = x_int[:, 4:5]
-    residual = -div_sig * h_val
+    residual = -div_sigma * config.PDE_LENGTH_SCALE
     
     pde_loss = torch.mean(residual**2)
     losses['pde'] = pde_loss
     total_loss += weights['pde'] * pde_loss
     
-    # Internal strain energy (volume integral)
+    # Internal strain energy (volume integral, approximated by mean * volume)
     energy_density = 0.5 * torch.einsum('bij,bij->b', eps, sig)
-    # Volume = Lx * Ly * H
-    H_local_val = x_int[:, 4:5].squeeze()
-    internal_energy = (energy_density * H_local_val).mean() * (config.Lx * config.Ly)
+    internal_energy = energy_density.mean() * (config.Lx * config.Ly * config.H)
     
     # --- 2. Dirichlet BCs (Clamped Sides) ---
     x_side = data['sides'][0].to(device)
-    v_side = model(x_side, 0)
     E_side = x_side[:, 3:4]
-    u_side = v_side / (E_side) # Scale BC prediction
+    v_side = model(x_side, 0)
+    u_side = v_side / (E_side) # Scale BC prediction too
     bc_loss = torch.mean(u_side**2)
     losses['bc_sides'] = bc_loss
     total_loss += weights['bc'] * bc_loss
@@ -179,14 +142,8 @@ def compute_loss(model, data, device, weights=None):
     mu = mu.unsqueeze(2)
     
     v_top = model(x_top_load, 0)
-    E_local_load = x_top_load[:, 3:4]
-    H_local_load = x_top_load[:, 4:5]
     u_top = v_top / (E_local_load) # Scaling
-    
-    grad_u_top_zeta = gradient(u_top, x_top_load)
-    grad_u_top = grad_u_top_zeta.clone()
-    grad_u_top[:, :, 2] = grad_u_top_zeta[:, :, 2] / H_local_load
-    
+    grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
     
     T = sig_top[:, :, 2]
@@ -222,14 +179,8 @@ def compute_loss(model, data, device, weights=None):
     mu_free = mu_free.unsqueeze(2)
     
     v_top_free = model(x_top_free, 0)
-    E_local_free = x_top_free[:, 3:4]
-    H_local_free = x_top_free[:, 4:5]
     u_top_free = v_top_free / (E_local_free)
-    
-    grad_u_free_zeta = gradient(u_top_free, x_top_free)
-    grad_u_free = grad_u_free_zeta.clone()
-    grad_u_free[:, :, 2] = grad_u_free_zeta[:, :, 2] / H_local_free
-    
+    grad_u_free = gradient(u_top_free, x_top_free)
     sig_top_free = stress(strain(grad_u_free), lm_free, mu_free)
     T_free = sig_top_free[:, :, 2]
     
@@ -248,14 +199,8 @@ def compute_loss(model, data, device, weights=None):
     mu_bot = mu_bot.unsqueeze(2)
     
     v_bot = model(x_bot, 0)
-    E_local_bot = x_bot[:, 3:4]
-    H_local_bot = x_bot[:, 4:5]
     u_bot = v_bot / (E_local_bot)
-    
-    grad_u_bot_zeta = gradient(u_bot, x_bot)
-    grad_u_bot = grad_u_bot_zeta.clone()
-    grad_u_bot[:, :, 2] = grad_u_bot_zeta[:, :, 2] / H_local_bot
-    
+    grad_u_bot = gradient(u_bot, x_bot)
     sig_bot = stress(strain(grad_u_bot), lm_bot, mu_bot)
     
     T_bot = -sig_bot[:, :, 2]
@@ -308,35 +253,12 @@ def compute_residuals(model, data, device):
     
     v_int = model(x_int, 0)
     u = v_int / (E_local)
-    
-    grad_u_zeta = gradient(u, x_int)
-    H_local = x_int[:, 4:5]
-    grad_u = grad_u_zeta.clone()
-    grad_u[:, :, 2] = grad_u_zeta[:, :, 2] / H_local
-    
+    grad_u = gradient(u, x_int)
     eps = strain(grad_u)
     sig = stress(eps, lm, mu)
+    div_sigma = divergence(sig, x_int)
     
-    # Equilibrium: -div(sigma) = 0
-    div_sig = torch.zeros(x_int.shape[0], 3, device=device)
-    for i in range(3):
-        div_i = 0
-        for j in range(3):
-            sig_ij = sig[:, i, j].unsqueeze(1)
-            grad_sig_ij = autograd.grad(
-                sig_ij, x_int,
-                grad_outputs=torch.ones_like(sig_ij),
-                create_graph=True,
-                retain_graph=True
-            )[0]
-            if j == 2:
-                div_i += grad_sig_ij[:, j] / H_local.squeeze()
-            else:
-                div_i += grad_sig_ij[:, j]
-        div_sig[:, i] = div_i
-        
-    h_val = x_int[:, 4:5]
-    residual = -div_sig * h_val
+    residual = -div_sigma * config.PDE_LENGTH_SCALE
     residual_mag = torch.sqrt(torch.sum(residual**2, dim=1))
     residuals['interior'] = residual_mag.cpu()
     
@@ -359,14 +281,8 @@ def compute_residuals(model, data, device):
     mu = mu.unsqueeze(2)
     
     v_top = model(x_top_load, 0)
-    E_local_load = x_top_load[:, 3:4]
-    H_local_load = x_top_load[:, 4:5]
     u_top = v_top / (E_local_load)
-    
-    grad_u_top_zeta = gradient(u_top, x_top_load)
-    grad_u_top = grad_u_top_zeta.clone()
-    grad_u_top[:, :, 2] = grad_u_top_zeta[:, :, 2] / H_local_load
-    
+    grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
     T = sig_top[:, :, 2]
     mask = load_mask(x_top_load).unsqueeze(1)
@@ -390,14 +306,8 @@ def compute_residuals(model, data, device):
     mu_free = mu_free.unsqueeze(2)
     
     v_top_free = model(x_top_free, 0)
-    E_local_free = x_top_free[:, 3:4]
-    H_local_free = x_top_free[:, 4:5]
     u_top_free = v_top_free / (E_local_free)
-    
-    grad_u_free_zeta = gradient(u_top_free, x_top_free)
-    grad_u_free = grad_u_free_zeta.clone()
-    grad_u_free[:, :, 2] = grad_u_free_zeta[:, :, 2] / H_local_free
-    
+    grad_u_free = gradient(u_top_free, x_top_free)
     sig_top_free = stress(strain(grad_u_free), lm_free, mu_free)
     T_free = sig_top_free[:, :, 2]
     free_residual = torch.sqrt(torch.sum(T_free**2, dim=1))
@@ -414,14 +324,8 @@ def compute_residuals(model, data, device):
     mu_bot = mu_bot.unsqueeze(2)
     
     v_bot = model(x_bot, 0)
-    E_local_bot = x_bot[:, 3:4]
-    H_local_bot = x_bot[:, 4:5]
-    u_bot = v_bot / (E_local_bot)
-    
-    grad_u_bot_zeta = gradient(u_bot, x_bot)
-    grad_u_bot = grad_u_bot_zeta.clone()
-    grad_u_bot[:, :, 2] = grad_u_bot_zeta[:, :, 2] / H_local_bot
-    
+    u_bot = v_bot / (E_local_bot ** 1.1)
+    grad_u_bot = gradient(u_bot, x_bot)
     sig_bot = stress(strain(grad_u_bot), lm_bot, mu_bot)
     T_bot = -sig_bot[:, :, 2]
     bot_residual = torch.sqrt(torch.sum(T_bot**2, dim=1))

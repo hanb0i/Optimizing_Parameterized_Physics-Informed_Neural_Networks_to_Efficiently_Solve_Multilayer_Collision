@@ -23,7 +23,7 @@ class LayerNet(nn.Module):
         layers = []
         # Input: x, y, z (and E as an extra channel)
         self.fourier = FourierFeatures(3, fourier_dim, fourier_scale) if fourier_dim > 0 else None
-        current_dim = (2 * fourier_dim + 2) if fourier_dim > 0 else 5
+        current_dim = (2 * fourier_dim + 1) if fourier_dim > 0 else 4
         
         layers.append(nn.Linear(current_dim, hidden_units))
         layers.append(activation)
@@ -47,7 +47,7 @@ class LayerNet(nn.Module):
                 nn.init.constant_(m.bias, 0)
                 
     def forward(self, x):
-        # x shape: (N, 5) -> [x, y, zeta, E, H]
+        # x shape: (N, 4) -> [x, y, z, E]
         # Scale z coordinate by 10 to match x,y range [0,1]
         # Normalize E from [1, 10] to approx [0, 1] for better conditioning
         # E_norm = (E - 1) / 9
@@ -59,20 +59,17 @@ class LayerNet(nn.Module):
         y_coord = x[:, 1:2]
         z_coord = x[:, 2:3]
         e_param = x[:, 3:4]
-        h_param = x[:, 4:5]
         
         e_min, e_max = config.E_RANGE
-        h_min, h_max = config.H_RANGE
-        e_norm = (e_param - e_min) / (e_max - e_min + 1e-6)
-        h_norm = (h_param - h_min) / (h_max - h_min + 1e-6)
+        e_span = (e_max - e_min) if (e_max - e_min) != 0 else 1.0
+        e_norm = (e_param - e_min) / e_span
         
         if self.fourier is not None:
             xyz = torch.cat([x_coord, y_coord, z_coord], dim=1)
             ff = self.fourier(xyz)
-            x_scaled = torch.cat([ff, e_norm, h_norm], dim=1)
+            x_scaled = torch.cat([ff, e_norm], dim=1)
         else:
-            # Domain in x,y is [0,1]. zeta is [0,1].
-            x_scaled = torch.cat([x_coord, y_coord, z_coord, e_norm, h_norm], dim=1)
+            x_scaled = torch.cat([x_coord, y_coord, z_coord * 10.0, e_norm], dim=1)
         
         u_raw = self.net(x_scaled)
         
