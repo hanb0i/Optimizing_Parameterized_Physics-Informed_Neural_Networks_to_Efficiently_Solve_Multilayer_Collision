@@ -23,7 +23,15 @@ class LayerNet(nn.Module):
         layers = []
         # Input: x, y, z (and E, thickness as extra channels)
         self.fourier = FourierFeatures(3, fourier_dim, fourier_scale) if fourier_dim > 0 else None
-        current_dim = (2 * fourier_dim + 2) if fourier_dim > 0 else 5
+        
+        # Base input dimension
+        # If fourier: [sin(..), cos(..)] (size 2*fourier_dim) + e_norm + t_norm
+        # Else: x, y, z_hat, e_norm, t_norm (size 5)
+        base_dim = (2 * fourier_dim + 2) if fourier_dim > 0 else 5
+        
+        # We add 3 extra physics-informed features: (H/t), (H/t)^2, (H/t)^3
+        # These help the network resolve the 1/t^3 scaling naturally from the PDE data.
+        current_dim = base_dim + 3
         
         layers.append(nn.Linear(current_dim, hidden_units))
         layers.append(activation)
@@ -69,12 +77,32 @@ class LayerNet(nn.Module):
         t_safe = torch.clamp(t_param, min=1e-6)
         z_hat = z_coord / t_safe
         
+        # Physics-Informed Features: scaling relative to baseline H
+        # This gives the network 'basis functions' that match the expected physics (bending ~ 1/t^3)
+        # using H=0.1 as reference to keep features ~ O(1)
+        # However, for t=0.05, ratio=2, ratio^3=8. This is large but not insane.
+        # But if the network is initialized with small weights, an input of 8 might effectively saturate units or dominate gradients.
+        
+        h_ref = getattr(config, 'H', 0.1)
+        ratio = h_ref / t_safe 
+        
+        # We normalize these features to be roughly [-1, 1] or [0, 1] based on the data range.
+        # Data range for t is [0.05, 0.15] -> ratio in [0.66, 2.0]
+        # ratio^3 in [0.29, 8.0]
+        # Let's simply scale them down by their expected max values so they are O(1).
+        
+        feat_inv1 = (ratio - 1.0) # Center around H_ref
+        feat_inv2 = (ratio**2 - 2.0) / 2.0 
+        feat_inv3 = (ratio**3 - 4.0) / 4.0 # Scale down the cubic term aggressively
+        
+        extra_feats = torch.cat([feat_inv1, feat_inv2, feat_inv3], dim=1)
+        
         if self.fourier is not None:
             xyz = torch.cat([x_coord, y_coord, z_hat], dim=1)
             ff = self.fourier(xyz)
-            x_scaled = torch.cat([ff, e_norm, t_norm], dim=1)
+            x_scaled = torch.cat([ff, e_norm, t_norm, extra_feats], dim=1)
         else:
-            x_scaled = torch.cat([x_coord, y_coord, z_hat, e_norm, t_norm], dim=1)
+            x_scaled = torch.cat([x_coord, y_coord, z_hat, e_norm, t_norm, extra_feats], dim=1)
         
         u_raw = self.net(x_scaled)
         
