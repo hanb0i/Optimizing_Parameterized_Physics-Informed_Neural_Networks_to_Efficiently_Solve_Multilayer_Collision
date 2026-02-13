@@ -21,6 +21,94 @@ import fem_solver
 import data
 import physics
 
+def _get_e_sweep_values():
+    if hasattr(config, "VERIFY_E_SWEEP_VALUES"):
+        return [float(v) for v in config.VERIFY_E_SWEEP_VALUES]
+    e_min, e_max = config.E_RANGE
+    steps = int(os.getenv("PINN_VERIFY_E_STEPS", "10"))
+    steps = max(2, steps)
+    return np.linspace(float(e_min), float(e_max), steps).tolist()
+
+def _u_from_v(v_pinn_flat, E_val, thickness):
+    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
+    if alpha == 0.0:
+        t_scale = 1.0
+    else:
+        t_scale = (float(getattr(config, "H", 1.0)) / max(1e-8, float(thickness))) ** alpha
+    e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
+    return (v_pinn_flat / (float(E_val) ** e_pow)) * t_scale
+
+def verify_e_sweep(pinn, device, thickness_values, viz_dir, fea_refs=None):
+    """Verify E-parametrization by comparing peak top-surface u_z vs E.
+
+    For linear elasticity here, u scales approximately as 1/E. We compute one
+    FEA solution per thickness at E=1, then scale the whole field by 1/E for
+    the sweep curve.
+    """
+    e_values = _get_e_sweep_values()
+    e_ref = 1.0
+
+    print("\n=== E Sweep Verification (Peak u_z vs E) ===")
+    for thickness in thickness_values:
+        if fea_refs is not None and thickness in fea_refs:
+            x_nodes, y_nodes, z_nodes, u_fea_ref = fea_refs[thickness]
+        else:
+            x_nodes, y_nodes, z_nodes, u_fea_ref = run_fea(e_ref, thickness)
+
+        u_z_fea_top_ref = np.array(u_fea_ref, dtype=float)[:, :, -1, 2].T  # (ny, nx)
+
+        X, Y = np.meshgrid(x_nodes, y_nodes)
+        nx, ny = len(x_nodes), len(y_nodes)
+        X_flat = X.flatten()
+        Y_flat = Y.flatten()
+        Z_flat = np.ones_like(X_flat) * thickness
+        T_flat = np.ones_like(X_flat) * thickness
+
+        fea_peaks = []
+        pinn_peaks = []
+        rel_peak_errs = []
+
+        for E_val in e_values:
+            u_z_fea_top = u_z_fea_top_ref * (e_ref / float(E_val))
+            peak_fea = float(np.min(u_z_fea_top))
+
+            E_flat = np.ones_like(X_flat) * E_val
+            input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat], axis=1)
+            input_tensor = torch.tensor(input_pts, dtype=torch.float32).to(device)
+            with torch.no_grad():
+                v_pinn_flat = pinn(input_tensor).cpu().numpy()
+            u_pinn_flat = _u_from_v(v_pinn_flat, E_val, thickness)
+            u_z_pinn_top = u_pinn_flat[:, 2].reshape(ny, nx)
+            peak_pinn = float(np.min(u_z_pinn_top))
+
+            fea_peaks.append(peak_fea)
+            pinn_peaks.append(peak_pinn)
+            rel_peak_errs.append(abs((peak_pinn - peak_fea) / peak_fea) if peak_fea != 0 else np.nan)
+
+        e_arr = np.array(e_values, dtype=float)
+        fea_amp = np.clip(-np.array(fea_peaks, dtype=float), 1e-12, None)
+        pinn_amp = np.clip(-np.array(pinn_peaks, dtype=float), 1e-12, None)
+        k_fea = -np.polyfit(np.log(e_arr), np.log(fea_amp), 1)[0]
+        k_pinn = -np.polyfit(np.log(e_arr), np.log(pinn_amp), 1)[0]
+
+        print(f"\nThickness t={thickness}:")
+        print(f"  Expected scaling ~ 1/E (k≈1.0). FEA fit k={k_fea:.3f}, PINN fit k={k_pinn:.3f}")
+        print(f"  Peak rel error: mean={float(np.nanmean(rel_peak_errs)):.3f}, max={float(np.nanmax(rel_peak_errs)):.3f}")
+
+        fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+        ax.plot(e_values, fea_peaks, "o-", label="FEA peak u_z (scaled)", linewidth=1.5)
+        ax.plot(e_values, pinn_peaks, "s-", label="PINN peak u_z", linewidth=1.5)
+        ax.set_xlabel("E")
+        ax.set_ylabel("Peak u_z (top surface)")
+        ax.set_title(f"E Sweep | t={thickness} | FEA k={k_fea:.2f}, PINN k={k_pinn:.2f}")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        plt.tight_layout()
+        out_path = os.path.join(viz_dir, f"e_sweep_peaks_t{thickness:.3f}.png")
+        plt.savefig(out_path)
+        print(f"  Saved {out_path}")
+        plt.close()
+
 def plot_training_data_distribution():
     print("Generating Training Data Distribution Plot...")
     
@@ -344,14 +432,21 @@ def main():
     # --- 2. Parametric Verification Plot ---
     # Create one figure per thickness to preserve FEA/PINN/Error rows
     print("\nGenerating Parametric Comparison Plots...")
+    fea_refs = {}
     for thickness in thickness_values:
+        # Linear elastic response: compute FEA once at E=1 and scale by 1/E.
+        x_nodes_ref, y_nodes_ref, z_nodes_ref, u_fea_ref = run_fea(1.0, thickness)
+        u_fea_ref = np.array(u_fea_ref, dtype=float)
+        fea_refs[thickness] = (x_nodes_ref, y_nodes_ref, z_nodes_ref, u_fea_ref)
+
         fig, axes = plt.subplots(3, 3, figsize=(18, 15))
         # Row 0: FEA, Row 1: PINN, Row 2: Error
         # Cols: E=1, E=5, E=10
 
         for idx, E_val in enumerate(E_test_values):
-            # 1. Run FEA
-            x_nodes, y_nodes, z_nodes, u_fea_grid = run_fea(E_val, thickness)
+            # 1. FEA via scaling from E=1 reference
+            x_nodes, y_nodes, z_nodes = x_nodes_ref, y_nodes_ref, z_nodes_ref
+            u_fea_grid = u_fea_ref * (1.0 / float(E_val))
             
             # Extract Top Surface for Visualization
             # u_fea_grid shape: (nx, ny, nz, 3)
@@ -376,14 +471,7 @@ def main():
             with torch.no_grad():
                 v_pinn_flat = pinn(input_tensor).cpu().numpy()
                 
-            # Physics compliance scaling: u = (v / E) * (H / t)^alpha
-            alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
-            if alpha == 0.0:
-                scale = 1.0
-            else:
-                scale = (float(getattr(config, "H", 1.0)) / max(1e-8, float(thickness))) ** alpha
-            e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
-            u_pinn_flat = (v_pinn_flat / (float(E_val) ** e_pow)) * scale
+            u_pinn_flat = _u_from_v(v_pinn_flat, E_val, thickness)
                 
             u_z_pinn_top = u_pinn_flat[:, 2].reshape(ny, nx)
             
@@ -424,6 +512,9 @@ def main():
         plt.savefig(result_path)
         print(f"\nVerification plot saved to: {result_path}")
     # plt.show()
+
+    # --- 3. E Sweep Verification ---
+    verify_e_sweep(pinn, device, thickness_values, viz_dir, fea_refs=fea_refs)
 
 if __name__ == "__main__":
     main()

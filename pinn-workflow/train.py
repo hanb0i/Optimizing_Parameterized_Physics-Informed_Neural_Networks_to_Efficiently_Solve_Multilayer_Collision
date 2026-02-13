@@ -172,15 +172,16 @@ def train():
             if fem_available:
                 with torch.no_grad():
                     v_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
-                    # Apply compliance scaling u = (v / E) * (H / t)^alpha
+                    # Apply compliance scaling u = (v / E^p) * (H / t)^alpha
                     E_vals = pts_fea[:, 3:4]  # numpy array from line 71
                     t_vals = pts_fea[:, 4:5]
                     alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
                     if alpha == 0.0:
-                        scale = 1.0
+                        t_scale = 1.0
                     else:
-                        scale = (float(getattr(config, "H", 1.0)) / np.clip(t_vals, 1e-8, None)) ** alpha
-                    u_pinn_flat = (v_pinn_flat / E_vals) * scale
+                        t_scale = (float(getattr(config, "H", 1.0)) / np.clip(t_vals, 1e-8, None)) ** alpha
+                    e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
+                    u_pinn_flat = (v_pinn_flat / (E_vals ** e_pow)) * t_scale
                      
                     diff = np.abs(u_pinn_flat - u_fea_flat)
                     mae = np.mean(diff)
@@ -245,15 +246,16 @@ def train():
         if fem_available:
             with torch.no_grad():
                 v_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
-                # Apply compliance scaling u = (v / E) * (H / t)^alpha
+                # Apply compliance scaling u = (v / E^p) * (H / t)^alpha
                 E_vals = pts_fea[:, 3:4]
                 t_vals = pts_fea[:, 4:5]
                 alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
                 if alpha == 0.0:
-                    scale = 1.0
+                    t_scale = 1.0
                 else:
-                    scale = (float(getattr(config, "H", 1.0)) / np.clip(t_vals, 1e-8, None)) ** alpha
-                u_pinn_flat = (v_pinn_flat / E_vals) * scale
+                    t_scale = (float(getattr(config, "H", 1.0)) / np.clip(t_vals, 1e-8, None)) ** alpha
+                e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
+                u_pinn_flat = (v_pinn_flat / (E_vals ** e_pow)) * t_scale
                 diff = np.abs(u_pinn_flat - u_fea_flat)
                 mae = np.mean(diff)
                 max_err = np.max(diff)

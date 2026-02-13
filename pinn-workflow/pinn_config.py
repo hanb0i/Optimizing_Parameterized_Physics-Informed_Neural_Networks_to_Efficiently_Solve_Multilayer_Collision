@@ -19,6 +19,10 @@ E_RANGE = [1.0, 10.0]
 THICKNESS_RANGE = [0.05, 0.15]
 PARAM_DIM = 2
 
+# Optional: explicit E sweep values for `verify_parametric_pinn.py`.
+# If not set, it uses `np.linspace(E_RANGE[0], E_RANGE[1], PINN_VERIFY_E_STEPS)`.
+# VERIFY_E_SWEEP_VALUES = np.linspace(E_RANGE[0], E_RANGE[1], 10).tolist()
+
 # Inference-time compliance correction for E:
 # Use u = v / E^p instead of v / E (p=1.0). This can help slightly reduce
 # high-E under/over-shoot without retraining.
