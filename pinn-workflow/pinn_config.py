@@ -38,7 +38,7 @@ IMPACT_VELOCITY_REF = 1.0
 # Inference-time compliance correction for E:
 # Use u = v / E^p instead of v / E (p=1.0). This can help slightly reduce
 # high-E under/over-shoot without retraining.
-E_COMPLIANCE_POWER = 1.070
+E_COMPLIANCE_POWER = 0.973
 
 # --- Parametric compliance scaling ---
 # Many plate-like problems scale strongly with thickness (often ~ 1/t^3).
@@ -46,7 +46,7 @@ E_COMPLIANCE_POWER = 1.070
 #   u = (v / E) * (H / t)^alpha
 # where H is the baseline thickness (config.H) and t is the sampled thickness.
 # Set alpha=0.0 to disable.
-THICKNESS_COMPLIANCE_ALPHA = 2.450
+THICKNESS_COMPLIANCE_ALPHA = 1.234
 
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
@@ -77,8 +77,8 @@ NEURONS = 64
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
-EPOCHS_ADAM = 1000
-EPOCHS_LBFGS = 50
+EPOCHS_ADAM = 2000
+EPOCHS_LBFGS = 0
 # SOAP optimizer
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
@@ -127,7 +127,7 @@ FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 N_DATA_POINTS = 9000
 DATA_E_VALUES = [1.0, 5.0, 10.0]
 DATA_THICKNESS_VALUES = [0.05, 0.1, 0.15]
-USE_SUPERVISION_DATA = True
+USE_SUPERVISION_DATA = False
 
 # --- Explicit impact/friction physics controls ---
 # When enabled, restitution/friction influence boundary losses directly.
