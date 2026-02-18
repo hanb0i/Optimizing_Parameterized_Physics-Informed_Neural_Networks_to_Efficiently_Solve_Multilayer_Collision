@@ -9,36 +9,28 @@ DATASET_PATH = os.path.join(OUTPUT_DIR, "phase1_dataset.npz")
 MODEL_PATH = os.path.join(OUTPUT_DIR, "surrogate_model.pt")
 SUMMARY_PATH = os.path.join(OUTPUT_DIR, "phase1_summary.txt")
 
-# Design parameters (1-3 params recommended for Phase 1)
-DESIGN_PARAMS = ["E2", "E3"]
+# Design parameters: Full 5D Parametric Space
+DESIGN_PARAMS = ["E", "thickness", "restitution", "friction", "impact_velocity"]
 DESIGN_RANGES = {
-    "E2": (200.0, 500.0),
-    "E3": (200.0, 500.0),
+    "E": (1.0, 10.0),
+    "thickness": (0.05, 0.15),
+    "restitution": (0.1, 0.9),
+    "friction": (0.0, 0.6),
+    "impact_velocity": (0.2, 2.0)
 }
 
-BASE_LAYER_E = 360.0
-BASE_NU = 0.3
-
-# Geometry and loading (matches FEA workflow)
+# Geometry and loading (standardized across workflow)
 GEOMETRY = {
     "Lx": 1.0,
     "Ly": 1.0,
     "H": 0.1,
 }
-LAYER_INTERFACES = [0.0, GEOMETRY["H"] / 3.0, 2.0 * GEOMETRY["H"] / 3.0, GEOMETRY["H"]]
-LOAD_PATCH = {
-    "x_start": 0.33,
-    "x_end": 0.67,
-    "y_start": 0.33,
-    "y_end": 0.67,
-    "pressure": 0.1,
-}
 
 # Dataset generation
-N_SAMPLES = 200
+N_SAMPLES = 225
 SEED = 7
-TRAIN_FRACTION = 0.7
-VAL_FRACTION = 0.15
+TRAIN_FRACTION = 0.8
+VAL_FRACTION = 0.1
 
 # Model hyperparameters
 HIDDEN_LAYERS = 3
@@ -47,13 +39,13 @@ ACTIVATION = "tanh"
 
 # Training
 LEARNING_RATE = 1e-3
-MAX_EPOCHS = 2000
-BATCH_SIZE = 64
-PATIENCE = 200
-MIN_DELTA = 1e-5
+MAX_EPOCHS = 3000
+BATCH_SIZE = 32
+PATIENCE = 300
+MIN_DELTA = 1e-6
 
-# Validation and checks
-TREND_SWEEP_PARAM = "E2"
-TREND_SWEEP_POINTS = 25
+# Validation and sweeps
+TREND_SWEEP_PARAM = "E"
+TREND_SWEEP_POINTS = 50
 OPT_CANDIDATES = 1000
 TREND_ANCHOR_POINTS = 25

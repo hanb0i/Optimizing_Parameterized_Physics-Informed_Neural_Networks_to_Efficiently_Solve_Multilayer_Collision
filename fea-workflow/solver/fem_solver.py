@@ -96,16 +96,18 @@ def solve_fem(cfg):
     patch_y_min = cfg['load_patch']['y_start'] * Ly
     patch_y_max = cfg['load_patch']['y_end'] * Ly
     
-    # Soft edge load mask function (same as PINN)
+    # Load mask function
     def load_mask(x, y):
         """
-        Quadratic falloff mask: M(x,y) = 16*x_norm(1-x_norm)*y_norm(1-y_norm)
-        Returns 1.0 at center, 0.0 at edges
+        Supports both Quadratic falloff and Hard rectangular mask.
         """
         if x < patch_x_min or x > patch_x_max or y < patch_y_min or y > patch_y_max:
             return 0.0
+            
+        if not cfg.get('use_soft_mask', True):
+            return 1.0
         
-        # Normalize to [0, 1] within patch
+        # Normalize to [0, 1] within patch for soft mask
         x_norm = (x - patch_x_min) / (patch_x_max - patch_x_min)
         y_norm = (y - patch_y_min) / (patch_y_max - patch_y_min)
         

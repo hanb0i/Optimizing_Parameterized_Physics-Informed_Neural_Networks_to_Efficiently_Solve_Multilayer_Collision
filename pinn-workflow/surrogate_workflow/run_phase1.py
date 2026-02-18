@@ -105,8 +105,9 @@ def main():
 
     train_loader, val_loader, test_loader, splits = build_loaders(dataset, seed)
 
-    model = surrogate.MLP(
+    model = surrogate.MLPRegressor(
         input_dim=len(dataset["param_names"]),
+        output_dim=1,
         hidden_layers=config.HIDDEN_LAYERS,
         hidden_units=config.HIDDEN_UNITS,
         activation=config.ACTIVATION,
