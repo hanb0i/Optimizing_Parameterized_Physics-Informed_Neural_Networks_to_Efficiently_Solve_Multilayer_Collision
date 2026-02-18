@@ -7,59 +7,96 @@ import time
 def solve_fem(cfg):
     print("Initializing FEA Solver...")
     Lx, Ly, H = cfg['geometry']['Lx'], cfg['geometry']['Ly'], cfg['geometry']['H']
-    ne_x = 30  # Doubled from 30
-    ne_y = 30  # Doubled from 30
-    ne_z = 10  # Doubled from 10
+    Lx, Ly, H = cfg['geometry']['Lx'], cfg['geometry']['Ly'], cfg['geometry']['H']
+    ne_x = cfg.get('mesh', {}).get('ne_x', 30)
+    ne_y = cfg.get('mesh', {}).get('ne_y', 30)
+    ne_z = cfg.get('mesh', {}).get('ne_z', 30)  # Increased default to 30 for multi-layer support
     
     dx, dy, dz = Lx/ne_x, Ly/ne_y, H/ne_z
     nx, ny, nz = ne_x+1, ne_y+1, ne_z+1
     n_dof = nx * ny * nz * 3
     
-    # Material
-    E, nu = cfg['material']['E'], cfg['material']['nu']
-    lam = (E * nu) / ((1 + nu) * (1 - 2 * nu))
-    mu = E / (2 * (1 + nu))
+    # Pre-compute material matrices for each layer
+    # Expect cfg['material'] to be a list of dicts, or a single dict (for backward compatibility)
+    materials = cfg['material']
+    if isinstance(materials, dict):
+        materials = [materials]  # Single layer case
+        
+    C_matrices = []
+    lam_vals = []
+    mu_vals = []
     
-    # Element Stiffness Ke (Hex8) -- Simplified integration for brevity, same as before
-    # (Copying the Voxel FEM logic exactly from benchmark_fea.py)
-    # ... [Omitted full Ke implementation to save tokens, assuming similar structure] ...
-    # Wait, I must provide working code. I will paste the Ke function again.
-    
+    for mat in materials:
+        E_val, nu_val = mat['E'], mat['nu']
+        lam = (E_val * nu_val) / ((1 + nu_val) * (1 - 2 * nu_val))
+        mu = E_val / (2 * (1 + nu_val))
+        lam_vals.append(lam)
+        mu_vals.append(mu)
+        
+        C_diag = [lam+2*mu, lam+2*mu, lam+2*mu, mu, mu, mu]
+        C = np.zeros((6, 6))
+        C[0:3, 0:3] = lam
+        np.fill_diagonal(C, C_diag)
+        C_matrices.append(C)
+        
+    # Element integration points and shape function derivatives (constant for Hex8)
     gp = [-1/np.sqrt(3), 1/np.sqrt(3)]
-    Ke = np.zeros((24, 24))
-    C_diag = [lam+2*mu, lam+2*mu, lam+2*mu, mu, mu, mu]
-    C = np.zeros((6, 6))
-    C[0:3, 0:3] = lam
-    np.fill_diagonal(C, C_diag)
+    invJ = np.diag([2/dx, 2/dy, 2/dz])
+    detJ = dx * dy * dz / 8.0
     
-    for r in gp:
-        for s in gp:
-            for t in gp:
-                invJ = np.diag([2/dx, 2/dy, 2/dz])
-                detJ = dx * dy * dz / 8.0
-                B = np.zeros((6, 24))
-                node_signs = [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],
-                              [-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]]
-                for i in range(8):
-                    xi, eta, zeta = node_signs[i]
-                    dN_dxi = 0.125 * xi * (1 + eta * s) * (1 + zeta * t)
-                    dN_deta = 0.125 * eta * (1 + xi * r) * (1 + zeta * t)
-                    dN_dzeta = 0.125 * zeta * (1 + xi * r) * (1 + eta * s)
-                    d_global = invJ @ np.array([dN_dxi, dN_deta, dN_dzeta])
-                    nx_val, ny_val, nz_val = d_global
-                    col = 3 * i
-                    B[0, col] = nx_val
-                    B[1, col+1] = ny_val
-                    B[2, col+2] = nz_val
-                    B[3, col+1] = nz_val; B[3, col+2] = ny_val
-                    B[4, col] = nz_val; B[4, col+2] = nx_val
-                    B[5, col] = ny_val; B[5, col+1] = nx_val
-                Ke += B.T @ C @ B * detJ
-                
+    # Pre-calculate B matrix part that depends on geometry (same for all elements if regular grid)
+    # Actually, B depends on r,s,t (integration points), so we compute Ke_base with C=Identity first?
+    # No, easier to just compute Ke for each material type once.
+    
+    Ke_by_material = []
+    for mat_idx in range(len(materials)):
+        Ke = np.zeros((24, 24))
+        C = C_matrices[mat_idx]
+        
+        for r in gp:
+            for s in gp:
+                for t in gp:
+                    B = np.zeros((6, 24))
+                    node_signs = [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],
+                                  [-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]]
+                    for i in range(8):
+                        xi, eta, zeta = node_signs[i]
+                        dN_dxi = 0.125 * xi * (1 + eta * s) * (1 + zeta * t)
+                        dN_deta = 0.125 * eta * (1 + xi * r) * (1 + zeta * t)
+                        dN_dzeta = 0.125 * zeta * (1 + xi * r) * (1 + eta * s)
+                        d_global = invJ @ np.array([dN_dxi, dN_deta, dN_dzeta])
+                        nx_val, ny_val, nz_val = d_global
+                        col = 3 * i
+                        B[0, col] = nx_val
+                        B[1, col+1] = ny_val
+                        B[2, col+2] = nz_val
+                        B[3, col+1] = nz_val; B[3, col+2] = ny_val
+                        B[4, col] = nz_val; B[4, col+2] = nx_val
+                        B[5, col] = ny_val; B[5, col+1] = nx_val
+                    Ke += B.T @ C @ B * detJ
+        Ke_by_material.append(Ke)
+
     # Assembly
     print("Assembling...")
+    
+    # Determine which layer each element belongs to
+    # Elements are indexed by k (z-direction) from 0 to ne_z-1
+    # We assume distinct layers stacked in Z.
+    # If materials is list of length N, we split ne_z into N chunks.
+    # Note: ne_z must be divisible by N for perfect alignment, or we handle approximate.
+    
+    n_layers = len(materials)
+    layers_per_mat = ne_z // n_layers
+    if ne_z % n_layers != 0:
+        print(f"Warning: ne_z={ne_z} not divisible by n_layers={n_layers}. Layer boundaries may be approximate.")
     el_indices = np.arange(ne_x * ne_y * ne_z)
     ek, ej, ei = np.unravel_index(el_indices, (ne_z, ne_y, ne_x))
+    
+    # ek is the element index in Z direction (0 to ne_z-1)
+    # Determine material index for each element
+    # Simple mapping: mat_idx = ek // layers_per_mat
+    # Handle the remainder/clamping carefully
+    mat_indices = np.minimum(ek // layers_per_mat, n_layers - 1)
     
     n0 = (ei) + (ej)*nx + (ek)*nx*ny
     n1 = (ei+1) + (ej)*nx + (ek)*nx*ny
@@ -78,7 +115,44 @@ def solve_fem(cfg):
         
     dof_rows = np.repeat(dof_indices, 24, axis=1).ravel()
     dof_cols = np.tile(dof_indices, (1, 24)).ravel()
-    vals = np.tile(Ke.ravel(), conn.shape[0])
+    
+    # Vectorized assignment of Ke values
+    # We need to construct the 'vals' array differently because Ke varies per element
+    # But wait, Ke only has n_layers distinct values.
+    # We can iterate over layers to build the sparse matrix components? 
+    # Or just flatten everything.
+    
+    # Let's do a loop over unique material indices to avoid massive broadcasting complexity
+    vals_list = []
+    rows_list = []
+    cols_list = []
+    
+    for m in range(n_layers):
+        mask = (mat_indices == m)
+        n_elem_layer = np.sum(mask)
+        if n_elem_layer == 0: continue
+        
+        # Ke for this material
+        Ke_flat = Ke_by_material[m].ravel()
+        
+        # Repeat Ke for all elements in this layer
+        vals_layer = np.tile(Ke_flat, n_elem_layer)
+        
+        # Extract DOF indices for these elements
+        # dof_indices is (n_elem_total, 24)
+        # We need rows/cols for just the masked elements
+        dof_subset = dof_indices[mask] # (n_elem_layer, 24)
+        
+        rows_layer = np.repeat(dof_subset, 24, axis=1).ravel()
+        cols_layer = np.tile(dof_subset, (1, 24)).ravel()
+        
+        vals_list.append(vals_layer)
+        rows_list.append(rows_layer)
+        cols_list.append(cols_layer)
+        
+    vals = np.concatenate(vals_list)
+    dof_rows = np.concatenate(rows_list)
+    dof_cols = np.concatenate(cols_list)
     
     K = sp.coo_matrix((vals, (dof_rows, dof_cols)), shape=(n_dof, n_dof)).tocsr()
     
