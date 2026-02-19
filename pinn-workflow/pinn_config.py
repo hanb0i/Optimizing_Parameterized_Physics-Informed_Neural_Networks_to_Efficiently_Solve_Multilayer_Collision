@@ -13,6 +13,12 @@ GEOMETRY_MODE = "box"
 CAD_STL_PATH = None  # e.g. "pinn-workflow/stl/unit_plate.stl"
 # If True, affinely map CAD bounds to [0,Lx]x[0,Ly]x[0,H] before training/inference.
 CAD_NORMALIZE_TO_CONFIG_BOUNDS = True
+# CAD sampler:
+# - "aabb": sample from CAD bounding box (fast, plate-only)
+# - "tessellation": PhysicsNeMo-like tessellation workflow (boundary on surface + interior via inside-test/SDF)
+CAD_SAMPLER = "aabb"
+# Surface classification threshold for tessellation mode
+CAD_NORMAL_Z_THRESH = 0.85
 # Single layer (homogeneous material)
 # z goes from 0 to H
 Layer_Interfaces = [0.0, H]

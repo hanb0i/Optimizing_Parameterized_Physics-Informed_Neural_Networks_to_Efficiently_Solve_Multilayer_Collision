@@ -1,2 +1,5 @@
 uv.lock
 third_party/
+.cache/
+.tmp/
+impact_pipeline_outputs/

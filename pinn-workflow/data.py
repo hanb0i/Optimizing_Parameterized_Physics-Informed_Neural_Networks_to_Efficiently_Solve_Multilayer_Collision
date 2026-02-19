@@ -4,6 +4,12 @@ import numpy as np
 import os
 import pinn_config as config
 from cad_geometry import stl_bounds, sample_uniform_box, sample_uniform_rect_on_plane
+from tessellated_geometry import (
+    load_stl_surface,
+    affine_map_surface_to_bounds,
+    sample_boundary as tess_sample_boundary,
+    sample_interior as tess_sample_interior,
+)
 
 # Parameter range helper (keeps baseline configs intact)
 def _get_e_range():
@@ -659,6 +665,10 @@ def get_data_cad(prev_data=None, residuals=None):
     if not stl_path:
         raise ValueError("`CAD_STL_PATH` must be set when `GEOMETRY_MODE='cad'`.")
 
+    sampler = str(getattr(config, "CAD_SAMPLER", "aabb")).lower()
+    if sampler not in {"aabb", "tessellation"}:
+        raise ValueError(f"Unknown CAD_SAMPLER: {sampler}")
+
     b = stl_bounds(stl_path)
     z_span = float(max(1e-12, b.size[2]))
 
@@ -673,71 +683,206 @@ def get_data_cad(prev_data=None, residuals=None):
         dst_max = tuple(map(float, b.max_xyz))
         thickness = z_span
 
-    # Sampling: interior/boundaries in the (possibly normalized) AABB.
     # Residual-based sampling is currently disabled for CAD mode; it relies on the
     # previous sampling distributions for each face type (box mode).
     use_residual = False
     _ = (prev_data, residuals, use_residual)
 
-    # Interior
-    interior_xyz = sample_uniform_box(int(config.N_INTERIOR), dst_min, dst_max)
+    if sampler == "aabb":
+        # Sampling: interior/boundaries in the (possibly normalized) AABB.
+        interior_xyz = sample_uniform_box(int(config.N_INTERIOR), dst_min, dst_max)
 
-    # Sides: x=0/x=Lx/y=0/y=Ly; keep z uniform.
-    n_face = int(config.N_SIDES) // 4
-    x0 = sample_uniform_box(n_face, (dst_min[0], dst_min[1], dst_min[2]), (dst_min[0], dst_max[1], dst_max[2]))
-    x1 = sample_uniform_box(n_face, (dst_max[0], dst_min[1], dst_min[2]), (dst_max[0], dst_max[1], dst_max[2]))
-    y0 = sample_uniform_box(n_face, (dst_min[0], dst_min[1], dst_min[2]), (dst_max[0], dst_min[1], dst_max[2]))
-    y1 = sample_uniform_box(n_face, (dst_min[0], dst_max[1], dst_min[2]), (dst_max[0], dst_max[1], dst_max[2]))
-    sides_xyz = np.concatenate([x0, x1, y0, y1], axis=0)
+        # Sides: x=0/x=Lx/y=0/y=Ly; keep z uniform.
+        n_face = int(config.N_SIDES) // 4
+        x0 = sample_uniform_box(
+            n_face,
+            (dst_min[0], dst_min[1], dst_min[2]),
+            (dst_min[0], dst_max[1], dst_max[2]),
+        )
+        x1 = sample_uniform_box(
+            n_face,
+            (dst_max[0], dst_min[1], dst_min[2]),
+            (dst_max[0], dst_max[1], dst_max[2]),
+        )
+        y0 = sample_uniform_box(
+            n_face,
+            (dst_min[0], dst_min[1], dst_min[2]),
+            (dst_max[0], dst_min[1], dst_max[2]),
+        )
+        y1 = sample_uniform_box(
+            n_face,
+            (dst_min[0], dst_max[1], dst_min[2]),
+            (dst_max[0], dst_max[1], dst_max[2]),
+        )
+        sides_xyz = np.concatenate([x0, x1, y0, y1], axis=0)
 
-    # Top (z = max): split into load patch vs free surface using existing patch bounds.
-    z_top = float(dst_max[2])
-    top_load_xyz = sample_uniform_rect_on_plane(
-        int(config.N_TOP_LOAD),
-        float(config.LOAD_PATCH_X[0]),
-        float(config.LOAD_PATCH_X[1]),
-        float(config.LOAD_PATCH_Y[0]),
-        float(config.LOAD_PATCH_Y[1]),
-        z_top,
-    )
-    # Top free: sample full top, then reject points inside load patch.
-    top_free_xyz = sample_uniform_rect_on_plane(
-        int(config.N_TOP_FREE) * 2,
-        float(dst_min[0]),
-        float(dst_max[0]),
-        float(dst_min[1]),
-        float(dst_max[1]),
-        z_top,
-    )
-    in_patch = (
-        (top_free_xyz[:, 0] >= float(config.LOAD_PATCH_X[0]))
-        & (top_free_xyz[:, 0] <= float(config.LOAD_PATCH_X[1]))
-        & (top_free_xyz[:, 1] >= float(config.LOAD_PATCH_Y[0]))
-        & (top_free_xyz[:, 1] <= float(config.LOAD_PATCH_Y[1]))
-    )
-    top_free_xyz = top_free_xyz[~in_patch]
-    if top_free_xyz.shape[0] < int(config.N_TOP_FREE):
+        # Top (z = max): split into load patch vs free surface using existing patch bounds.
+        z_top = float(dst_max[2])
+        top_load_xyz = sample_uniform_rect_on_plane(
+            int(config.N_TOP_LOAD),
+            float(config.LOAD_PATCH_X[0]),
+            float(config.LOAD_PATCH_X[1]),
+            float(config.LOAD_PATCH_Y[0]),
+            float(config.LOAD_PATCH_Y[1]),
+            z_top,
+        )
+        # Top free: sample full top, then reject points inside load patch.
         top_free_xyz = sample_uniform_rect_on_plane(
-            int(config.N_TOP_FREE),
+            int(config.N_TOP_FREE) * 2,
             float(dst_min[0]),
             float(dst_max[0]),
             float(dst_min[1]),
             float(dst_max[1]),
             z_top,
         )
-    else:
-        top_free_xyz = top_free_xyz[: int(config.N_TOP_FREE)]
+        in_patch = (
+            (top_free_xyz[:, 0] >= float(config.LOAD_PATCH_X[0]))
+            & (top_free_xyz[:, 0] <= float(config.LOAD_PATCH_X[1]))
+            & (top_free_xyz[:, 1] >= float(config.LOAD_PATCH_Y[0]))
+            & (top_free_xyz[:, 1] <= float(config.LOAD_PATCH_Y[1]))
+        )
+        top_free_xyz = top_free_xyz[~in_patch]
+        if top_free_xyz.shape[0] < int(config.N_TOP_FREE):
+            top_free_xyz = sample_uniform_rect_on_plane(
+                int(config.N_TOP_FREE),
+                float(dst_min[0]),
+                float(dst_max[0]),
+                float(dst_min[1]),
+                float(dst_max[1]),
+                z_top,
+            )
+        else:
+            top_free_xyz = top_free_xyz[: int(config.N_TOP_FREE)]
 
-    # Bottom (z = min)
-    z_bot = float(dst_min[2])
-    bottom_xyz = sample_uniform_rect_on_plane(
-        int(config.N_BOTTOM),
-        float(dst_min[0]),
-        float(dst_max[0]),
-        float(dst_min[1]),
-        float(dst_max[1]),
-        z_bot,
-    )
+        # Bottom (z = min)
+        z_bot = float(dst_min[2])
+        bottom_xyz = sample_uniform_rect_on_plane(
+            int(config.N_BOTTOM),
+            float(dst_min[0]),
+            float(dst_max[0]),
+            float(dst_min[1]),
+            float(dst_max[1]),
+            z_bot,
+        )
+    else:
+        # PhysicsNeMo-like tessellation workflow:
+        # - boundary points sampled on surface triangles (with normals)
+        # - interior points sampled by rejecting points with point-in-mesh test; SDF is available for debugging
+        surface = load_stl_surface(stl_path)
+        if getattr(config, "CAD_NORMALIZE_TO_CONFIG_BOUNDS", True):
+            surface = affine_map_surface_to_bounds(surface, dst_min, dst_max)
+            bounds_min = dst_min
+            bounds_max = dst_max
+        else:
+            bounds_min = tuple(map(float, surface.bounds_min))
+            bounds_max = tuple(map(float, surface.bounds_max))
+
+        interior_dict = tess_sample_interior(
+            surface,
+            int(config.N_INTERIOR),
+            bounds_min=bounds_min,
+            bounds_max=bounds_max,
+            compute_sdf_derivatives=False,
+        )
+        interior_xyz = np.concatenate([interior_dict["x"], interior_dict["y"], interior_dict["z"]], axis=1)
+
+        boundary = tess_sample_boundary(surface, int(config.N_SIDES + config.N_TOP_LOAD + config.N_TOP_FREE + config.N_BOTTOM) * 2)
+        bx = boundary["x"][:, 0]
+        by = boundary["y"][:, 0]
+        bz = boundary["z"][:, 0]
+        bnz = boundary["normal_z"][:, 0]
+        nz_thresh = float(getattr(config, "CAD_NORMAL_Z_THRESH", 0.85))
+
+        top_mask = bnz >= nz_thresh
+        bot_mask = bnz <= -nz_thresh
+        side_mask = ~(top_mask | bot_mask)
+
+        top_pts = np.stack([bx[top_mask], by[top_mask], bz[top_mask]], axis=1)
+        bot_pts = np.stack([bx[bot_mask], by[bot_mask], bz[bot_mask]], axis=1)
+        side_pts = np.stack([bx[side_mask], by[side_mask], bz[side_mask]], axis=1)
+
+        if side_pts.shape[0] < int(config.N_SIDES):
+            # Fallback to AABB sides if STL classification is insufficient
+            n_face = int(config.N_SIDES) // 4
+            x0 = sample_uniform_box(
+                n_face,
+                (dst_min[0], dst_min[1], dst_min[2]),
+                (dst_min[0], dst_max[1], dst_max[2]),
+            )
+            x1 = sample_uniform_box(
+                n_face,
+                (dst_max[0], dst_min[1], dst_min[2]),
+                (dst_max[0], dst_max[1], dst_max[2]),
+            )
+            y0 = sample_uniform_box(
+                n_face,
+                (dst_min[0], dst_min[1], dst_min[2]),
+                (dst_max[0], dst_min[1], dst_max[2]),
+            )
+            y1 = sample_uniform_box(
+                n_face,
+                (dst_min[0], dst_max[1], dst_min[2]),
+                (dst_max[0], dst_max[1], dst_max[2]),
+            )
+            sides_xyz = np.concatenate([x0, x1, y0, y1], axis=0)
+        else:
+            sides_xyz = side_pts[: int(config.N_SIDES)]
+
+        z_top = float(dst_max[2])
+        if top_pts.shape[0] == 0:
+            top_pts = sample_uniform_rect_on_plane(
+                int(config.N_TOP_LOAD + config.N_TOP_FREE),
+                float(dst_min[0]),
+                float(dst_max[0]),
+                float(dst_min[1]),
+                float(dst_max[1]),
+                z_top,
+            )
+
+        # Split top into load patch vs free
+        in_patch = (
+            (top_pts[:, 0] >= float(config.LOAD_PATCH_X[0]))
+            & (top_pts[:, 0] <= float(config.LOAD_PATCH_X[1]))
+            & (top_pts[:, 1] >= float(config.LOAD_PATCH_Y[0]))
+            & (top_pts[:, 1] <= float(config.LOAD_PATCH_Y[1]))
+        )
+        load_pts = top_pts[in_patch]
+        free_pts = top_pts[~in_patch]
+        if load_pts.shape[0] < int(config.N_TOP_LOAD):
+            top_load_xyz = sample_uniform_rect_on_plane(
+                int(config.N_TOP_LOAD),
+                float(config.LOAD_PATCH_X[0]),
+                float(config.LOAD_PATCH_X[1]),
+                float(config.LOAD_PATCH_Y[0]),
+                float(config.LOAD_PATCH_Y[1]),
+                z_top,
+            )
+        else:
+            top_load_xyz = load_pts[: int(config.N_TOP_LOAD)]
+        if free_pts.shape[0] < int(config.N_TOP_FREE):
+            top_free_xyz = sample_uniform_rect_on_plane(
+                int(config.N_TOP_FREE),
+                float(dst_min[0]),
+                float(dst_max[0]),
+                float(dst_min[1]),
+                float(dst_max[1]),
+                z_top,
+            )
+        else:
+            top_free_xyz = free_pts[: int(config.N_TOP_FREE)]
+
+        z_bot = float(dst_min[2])
+        if bot_pts.shape[0] < int(config.N_BOTTOM):
+            bottom_xyz = sample_uniform_rect_on_plane(
+                int(config.N_BOTTOM),
+                float(dst_min[0]),
+                float(dst_max[0]),
+                float(dst_min[1]),
+                float(dst_max[1]),
+                z_bot,
+            )
+        else:
+            bottom_xyz = bot_pts[: int(config.N_BOTTOM)]
 
     # NOTE: The PiNN is trained/defined in the returned coordinate system. If you disable
     # normalization, you must also disable hard side BC masks (`USE_HARD_SIDE_BC`) or

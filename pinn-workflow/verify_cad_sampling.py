@@ -18,9 +18,12 @@ def main():
         config.CAD_STL_PATH = os.path.join(
             PINN_WORKFLOW_DIR, "stl", "unit_plate_1x1x0p1.stl"
         )
+    # Try tessellation sampler by default for the CAD demo
+    config.CAD_SAMPLER = "tessellation"
 
     d = data.get_data()
     print(f"CAD STL: {config.CAD_STL_PATH}")
+    print(f"CAD_SAMPLER: {getattr(config, 'CAD_SAMPLER', None)}")
     for k in ["interior", "sides"]:
         pts = d[k][0]
         xyz = pts[:, 0:3]
@@ -37,4 +40,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
