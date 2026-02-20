@@ -27,19 +27,19 @@ GEOMETRY = {
 }
 
 # Dataset generation
-N_SAMPLES = 225
+N_SAMPLES = 1000 # Increased from 225 for <1% error target
 SEED = 7
 TRAIN_FRACTION = 0.8
 VAL_FRACTION = 0.1
 
 # Model hyperparameters
-HIDDEN_LAYERS = 3
-HIDDEN_UNITS = 64
+HIDDEN_LAYERS = 4 # Deeper for compelxity
+HIDDEN_UNITS = 128 # Wider for capacity
 ACTIVATION = "tanh"
 
 # Training
 LEARNING_RATE = 1e-3
-MAX_EPOCHS = 3000
+MAX_EPOCHS = 5000 # More epochs for convergence
 BATCH_SIZE = 32
 PATIENCE = 300
 MIN_DELTA = 1e-6

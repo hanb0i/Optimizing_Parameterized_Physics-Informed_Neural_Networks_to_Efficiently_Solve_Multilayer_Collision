@@ -5,14 +5,43 @@ import numpy as np
 Lx = 1.0
 Ly = 1.0
 H = 0.1  # Total height (baseline thickness)
-# Single layer (homogeneous material)
-# z goes from 0 to H
-Layer_Interfaces = [0.0, H]
 
-# --- Material Properties ---
-# Young's Modulus (E) and Poisson's Ratio (nu)
-# Single layer to match FEM
-E_vals = [1.0] # Normalized
+# --- Geometry Configuration ---
+GEOMETRY_TYPE = "DENT" # Options: "FLAT", "DENT"
+DENT_DEPTH = 0.05      # Amplitude of the dent (z_min at center = H - DENT_DEPTH)
+DENT_WIDTH = 0.2       # Sigma (spread) of the Gaussian
+DENT_CENTER_X = Lx / 2.0
+DENT_CENTER_Y = Ly / 2.0
+
+def get_domain_height(x, y):
+    """
+    Returns the top surface z-coordinate at (x, y).
+    z_top = H - A * exp(-r^2 / (2*sigma^2))
+    """
+    if GEOMETRY_TYPE == "FLAT":
+        return torch.full_like(x, H)
+    elif GEOMETRY_TYPE == "DENT":
+        r2 = (x - DENT_CENTER_X)**2 + (y - DENT_CENTER_Y)**2
+        dent = DENT_DEPTH * torch.exp(-r2 / (2 * DENT_WIDTH**2))
+        return H - dent
+    return torch.full_like(x, H)
+
+# 3-Layer Geometry (Sandwich Plate)
+# Top/Bot = 0.02, Core = 0.06
+LAYER_THICKNESSES = [0.02, 0.06, 0.02]
+# Ratios relative to total local thickness: [0.2, 0.8]
+LAYER_Z_RATIOS = [0.2, 0.8] 
+LAYER_Z_RANGES = [
+    [0.0, 0.02],          # Bottom Face Sheets (Wait, Z=0 is usually bottom)
+    [0.02, 0.08],         # Core
+    [0.08, 0.1]           # Top Face Sheets
+]
+# Material Properties per Layer
+LAYER_E_VALS = [10.0, 1.0, 10.0] # Stiff-Soft-Stiff
+LAYER_NU_VALS = [0.3, 0.3, 0.3]
+
+# Parameterized PINN settings unused in Phase 5
+E_vals = [1.0] 
 nu_vals = [0.3]
 # Parameterized PINN settings (do not alter baseline values)
 E_RANGE = [1.0, 10.0]
@@ -75,15 +104,15 @@ NEURONS = 64
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
-EPOCHS_ADAM = 2000 # Give it time to converge with high PDE weight
+EPOCHS_ADAM = 600 # Reduced for Sandwich Phase efficiency
 EPOCHS_LBFGS = 0
 # SOAP optimizer
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
-    'pde': 100.0,    # Increased massively (Experiment B: PDE Bias)
-    'bc': 1.0,      # Standard BC weight (Hard BCs remove loss, so this applies to TOP/BOT free surfaces)
-    'load': 10.0, # Strong load enforcement
+    'pde': 5.0,    # Reverted to perfect state (was 100.0)
+    'bc': 0.7,      # Reverted to perfect state (was 1.0)
+    'load': 5.0, # Reverted to perfect state (was 10.0)
     'energy': 0.0, # Disabled
     'impact_invariance': 0.0,  # Set >0 only for neutral-parameter mode
     'impact_contact': 0.0002,   # Reduced to preserve FEA parity in no-supervision mode

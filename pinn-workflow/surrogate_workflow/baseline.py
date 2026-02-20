@@ -65,7 +65,10 @@ def compute_response(mu):
     
     uz = v[:, 2]
     # Apply trained scaling parameters from pinn_config.py
-    t_scale = (float(pc.H) / t_val) ** float(pc.THICKNESS_COMPLIANCE_ALPHA)
-    u_final = (uz / (E_val ** float(pc.E_COMPLIANCE_POWER))) * t_scale
+    # Remove obsolete scaling (E_COMPLIANCE_POWER/THICKNESS_COMPLIANCE_ALPHA removed in Phase 6)
+    # The PINN model now learns raw displacement directly.
+    # We only apply the 10x manual correction requested by the user.
+    u_final = uz
     
-    return float(np.abs(np.min(u_final)))
+    # Manual stiffness correction (x10) for 3-layer dented geometry
+    return float(np.abs(np.min(u_final))) * 10.0

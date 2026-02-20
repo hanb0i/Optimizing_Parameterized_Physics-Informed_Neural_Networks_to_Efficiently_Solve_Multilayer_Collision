@@ -67,11 +67,11 @@ def run_3layer_verification():
     print("=== 3-Layer Composite Verification (Bonded) ===")
     
     # 1. Define Layer Properties (Bottom -> Top)
-    # Using distinct materials to test composite logic
+    # Using distinct materials to test composite logic - UPDATED for Phase 5 Sandwich
     layers = [
-        {'name': 'Bottom', 'E': 10.0, 'thickness': 0.1, 'nu': 0.3},
-        {'name': 'Middle', 'E': 1.0,  'thickness': 0.1, 'nu': 0.3},
-        {'name': 'Top',    'E': 5.0,  'thickness': 0.1, 'nu': 0.3}
+        {'name': 'Bottom', 'E': 10.0, 'thickness': 0.02, 'nu': 0.3},
+        {'name': 'Middle', 'E': 1.0,  'thickness': 0.06, 'nu': 0.3},
+        {'name': 'Top',    'E': 10.0, 'thickness': 0.02, 'nu': 0.3}
     ]
     
     total_thickness = sum(l['thickness'] for l in layers)
@@ -332,11 +332,11 @@ def run_dynamic_physics_check():
     from surrogate_workflow import baseline
     pinn_model, device = baseline._get_pinn()
     
-    # Layer Definitions (Fixed)
+    # Layer Definitions (Fixed for Phase 5)
     layers = [
-        {'name': 'Bottom', 'E': 10.0, 'thickness': 0.1, 'nu': 0.3},
-        {'name': 'Middle', 'E': 1.0,  'thickness': 0.1, 'nu': 0.3},
-        {'name': 'Top',    'E': 5.0,  'thickness': 0.1, 'nu': 0.3}
+        {'name': 'Bottom', 'E': 10.0, 'thickness': 0.02, 'nu': 0.3},
+        {'name': 'Middle', 'E': 1.0,  'thickness': 0.06, 'nu': 0.3},
+        {'name': 'Top',    'E': 10.0, 'thickness': 0.02, 'nu': 0.3}
     ]
     total_thickness = sum(l['thickness'] for l in layers)
     

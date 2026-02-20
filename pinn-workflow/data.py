@@ -141,33 +141,147 @@ def load_fem_supervision_data(n_points_per_e=None, e_values=None, thickness_valu
 
 
 def sample_domain(n, z_min, z_max):
-    # Uniform sampling
+    # Stratified sampling for 3-Layer Variable Geometry
+    if hasattr(config, "LAYER_Z_RANGES") and hasattr(config, "LAYER_E_VALS"):
+        layer_ranges = config.LAYER_Z_RANGES
+        layer_evals = config.LAYER_E_VALS
+        n_per_layer = n // len(layer_ranges)
+        
+        parts = []
+        for i, (z_start_ref, z_end_ref) in enumerate(layer_ranges):
+            # Coordinates
+            x = torch.rand(n_per_layer, 1) * config.Lx
+            y = torch.rand(n_per_layer, 1) * config.Ly
+            
+            # Calculate local z_top based on geometry
+            # We map the reference z_end (max 0.1) to the actual z_top (max 0.1 - dent)
+            # Simple linear scaling: z_actual = z_ref * (z_top(x,y) / H_ref)
+            z_top_local = config.get_domain_height(x, y)
+            scale = z_top_local / config.H
+            
+            z_start = z_start_ref * scale
+            z_end = z_end_ref * scale
+            
+            z = torch.rand(n_per_layer, 1) * (z_end - z_start) + z_start
+            
+            # Material & Geometric Params (Fixed for Phase 5)
+            # E is assigned by layer index
+            e = torch.ones(n_per_layer, 1) * layer_evals[i]
+            # Thickness is variable now
+            t = z_top_local
+            
+            r_min, r_max = _get_restitution_range()
+            restitution = torch.rand(n_per_layer, 1) * (r_max - r_min) + r_min
+            mu_min, mu_max = _get_friction_range()
+            friction = torch.rand(n_per_layer, 1) * (mu_max - mu_min) + mu_min
+            v0_min, v0_max = _get_impact_velocity_range()
+            impact_velocity = torch.rand(n_per_layer, 1) * (v0_max - v0_min) + v0_min
+            
+            parts.append(torch.cat([x, y, z, e, t, restitution, friction, impact_velocity], dim=1))
+        
+        # Remainder (Core)
+        n_rem = n - (n_per_layer * len(layer_ranges))
+        if n_rem > 0:
+            x = torch.rand(n_rem, 1) * config.Lx
+            y = torch.rand(n_rem, 1) * config.Ly
+            z_top_local = config.get_domain_height(x, y)
+            scale = z_top_local / config.H
+            
+            z_start = layer_ranges[1][0] * scale
+            z_end = layer_ranges[1][1] * scale
+            
+            z = torch.rand(n_rem, 1) * (z_end - z_start) + z_start
+            e = torch.ones(n_rem, 1) * layer_evals[1]
+            t = z_top_local
+            parts.append(torch.cat([x, y, z, e, t, 
+                                    torch.rand(n_rem, 1)*(r_max-r_min)+r_min, 
+                                    torch.rand(n_rem, 1)*(mu_max-mu_min)+mu_min,
+                                    torch.rand(n_rem, 1)*(v0_max-v0_min)+v0_min], dim=1))
+            
+        return torch.cat(parts, dim=0)
+
+    # Standard Uniform sampling (fallback)
     x = torch.rand(n, 1) * config.Lx
     y = torch.rand(n, 1) * config.Ly
+    z_max_local = config.get_domain_height(x, y)
     t_min, t_max = _get_thickness_range()
-    t = torch.rand(n, 1) * (t_max - t_min) + t_min
-    z = torch.rand(n, 1) * t
     
-    # Sample Young's Modulus E
+    # If parametric thickness is enabled, we sample it. Otherwise use geometry.
+    # Logic pivot: In Geometry Phase, 't' is the actual thickness at (x,y)
+    t = z_max_local
+    z = torch.rand(n, 1) * t
     e_min, e_max = _get_e_range()
     e = torch.rand(n, 1) * (e_max - e_min) + e_min
-
     r_min, r_max = _get_restitution_range()
     restitution = torch.rand(n, 1) * (r_max - r_min) + r_min
     mu_min, mu_max = _get_friction_range()
     friction = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
     v0_min, v0_max = _get_impact_velocity_range()
     impact_velocity = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
-
     return torch.cat([x, y, z, e, t, restitution, friction, impact_velocity], dim=1)
 
 def sample_domain_under_patch(n, z_min, z_max):
+    # Stratified sampling for 3-Layer Geometry under patch
+    if hasattr(config, "LAYER_Z_RANGES") and hasattr(config, "LAYER_E_VALS"):
+        layer_ranges = config.LAYER_Z_RANGES
+        layer_evals = config.LAYER_E_VALS
+        n_per_layer = n // len(layer_ranges)
+        
+        parts = []
+        x_min, x_max = config.LOAD_PATCH_X
+        y_min, y_max = config.LOAD_PATCH_Y
+        
+        for i, (z_start_ref, z_end_ref) in enumerate(layer_ranges):
+            x = torch.rand(n_per_layer, 1) * (x_max - x_min) + x_min
+            y = torch.rand(n_per_layer, 1) * (y_max - y_min) + y_min
+            
+            z_top_local = config.get_domain_height(x, y)
+            scale = z_top_local / config.H
+            z_start = z_start_ref * scale
+            z_end = z_end_ref * scale
+            
+            z = torch.rand(n_per_layer, 1) * (z_end - z_start) + z_start
+            
+            e = torch.ones(n_per_layer, 1) * layer_evals[i]
+            t = z_top_local
+            
+            r_min, r_max = _get_restitution_range()
+            restitution = torch.rand(n_per_layer, 1) * (r_max - r_min) + r_min
+            mu_min, mu_max = _get_friction_range()
+            friction = torch.rand(n_per_layer, 1) * (mu_max - mu_min) + mu_min
+            v0_min, v0_max = _get_impact_velocity_range()
+            impact_velocity = torch.rand(n_per_layer, 1) * (v0_max - v0_min) + v0_min
+            
+            parts.append(torch.cat([x, y, z, e, t, restitution, friction, impact_velocity], dim=1))
+        
+        # Remainder
+        n_rem = n - (n_per_layer * len(layer_ranges))
+        if n_rem > 0:
+            x = torch.rand(n_rem, 1) * (x_max - x_min) + x_min
+            y = torch.rand(n_rem, 1) * (y_max - y_min) + y_min
+            
+            z_top_local = config.get_domain_height(x, y)
+            scale = z_top_local / config.H
+            z_start = layer_ranges[1][0] * scale # Core
+            z_end = layer_ranges[1][1] * scale
+            
+            z = torch.rand(n_rem, 1) * (z_end - z_start) + z_start
+            e = torch.ones(n_rem, 1) * layer_evals[1]
+            t = z_top_local
+            parts.append(torch.cat([x, y, z, e, t, 
+                                    torch.rand(n_rem, 1)*(r_max-r_min)+r_min, 
+                                    torch.rand(n_rem, 1)*(mu_max-mu_min)+mu_min,
+                                    torch.rand(n_rem, 1)*(v0_max-v0_min)+v0_min], dim=1))
+            
+        return torch.cat(parts, dim=0)
+
+    # Standard
     x_min, x_max = config.LOAD_PATCH_X
     y_min, y_max = config.LOAD_PATCH_Y
     x = torch.rand(n, 1) * (x_max - x_min) + x_min
     y = torch.rand(n, 1) * (y_max - y_min) + y_min
-    t_min, t_max = _get_thickness_range()
-    t = torch.rand(n, 1) * (t_max - t_min) + t_min
+    z_max_local = config.get_domain_height(x, y)
+    t = z_max_local
     z = torch.rand(n, 1) * t
     e_min, e_max = _get_e_range()
     e = torch.rand(n, 1) * (e_max - e_min) + e_min
@@ -227,58 +341,108 @@ def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     return new_pts
 
 def sample_boundaries(n, z_min, z_max):
-    # 4 Side faces: x=0, x=Lx, y=0, y=Ly
-    # Split n among 4 faces
+    # Stratified sampling for 3-Layer Geometry
+    if hasattr(config, "LAYER_Z_RANGES") and hasattr(config, "LAYER_E_VALS"):
+        layer_ranges = config.LAYER_Z_RANGES
+        layer_evals = config.LAYER_E_VALS
+        
+        # Split n among 4 faces
+        n_face = n // 4
+        parts = []
+        
+        # Helper to generating stratified points for a generic face
+        # face_type: 0 (x=0), 1 (x=Lx), 2 (y=0), 3 (y=Ly)
+        def sample_face_stratified(n_f, face_type):
+            n_layer = n_f // len(layer_ranges)
+            face_parts = []
+            
+            for i, (z_start_ref, z_end_ref) in enumerate(layer_ranges):
+                # Common coordinates
+                if face_type == 0 or face_type == 1: # x-faces
+                    dim1 = torch.rand(n_layer, 1) * config.Ly # y
+                    # x is fixed
+                else: # y-faces
+                    dim1 = torch.rand(n_layer, 1) * config.Lx # x
+                    # y is fixed
+                
+                # Z-scaling logic
+                # We need x,y to compute height.
+                if face_type == 0: # x=0
+                    x = torch.zeros(n_layer, 1)
+                    y = dim1
+                elif face_type == 1: # x=Lx
+                    x = torch.ones(n_layer, 1) * config.Lx
+                    y = dim1
+                elif face_type == 2: # y=0
+                    x = dim1
+                    y = torch.zeros(n_layer, 1)
+                elif face_type == 3: # y=Ly
+                    x = dim1
+                    y = torch.ones(n_layer, 1) * config.Ly
+                
+                z_top_local = config.get_domain_height(x, y)
+                scale = z_top_local / config.H
+                z_start = z_start_ref * scale
+                z_end = z_end_ref * scale
+                
+                z = torch.rand(n_layer, 1) * (z_end - z_start) + z_start
+                e = torch.ones(n_layer, 1) * layer_evals[i]
+                t = z_top_local
+                
+                r_min, r_max = _get_restitution_range()
+                restitution = torch.rand(n_layer, 1) * (r_max - r_min) + r_min
+                mu_min, mu_max = _get_friction_range()
+                friction = torch.rand(n_layer, 1) * (mu_max - mu_min) + mu_min
+                v0_min, v0_max = _get_impact_velocity_range()
+                impact_velocity = torch.rand(n_layer, 1) * (v0_max - v0_min) + v0_min
+                
+                face_parts.append(torch.cat([x, y, z, e, t, restitution, friction, impact_velocity], dim=1))
+                    
+            return torch.cat(face_parts, dim=0)
+
+        parts.append(sample_face_stratified(n_face, 0))
+        parts.append(sample_face_stratified(n_face, 1))
+        parts.append(sample_face_stratified(n_face, 2))
+        parts.append(sample_face_stratified(n_face, 3))
+        
+        return torch.cat(parts, dim=0)
+
+    # Standard
     n_face = n // 4
     
-    e_min, e_max = _get_e_range()
-    t_min, t_max = _get_thickness_range()
-    r_min, r_max = _get_restitution_range()
-    mu_min, mu_max = _get_friction_range()
-    v0_min, v0_max = _get_impact_velocity_range()
-    # x=0
-    y1 = torch.rand(n_face, 1) * config.Ly
-    t1 = torch.rand(n_face, 1) * (t_max - t_min) + t_min
-    z1 = torch.rand(n_face, 1) * t1
-    x1 = torch.zeros(n_face, 1)
-    e1 = torch.rand(n_face, 1) * (e_max - e_min) + e_min
-    r1 = torch.rand(n_face, 1) * (r_max - r_min) + r_min
-    mu1 = torch.rand(n_face, 1) * (mu_max - mu_min) + mu_min
-    v01 = torch.rand(n_face, 1) * (v0_max - v0_min) + v0_min
-    p1 = torch.cat([x1, y1, z1, e1, t1, r1, mu1, v01], dim=1)
-    
-    # x=Lx
-    y2 = torch.rand(n_face, 1) * config.Ly
-    t2 = torch.rand(n_face, 1) * (t_max - t_min) + t_min
-    z2 = torch.rand(n_face, 1) * t2
-    x2 = torch.ones(n_face, 1) * config.Lx
-    e2 = torch.rand(n_face, 1) * (e_max - e_min) + e_min
-    r2 = torch.rand(n_face, 1) * (r_max - r_min) + r_min
-    mu2 = torch.rand(n_face, 1) * (mu_max - mu_min) + mu_min
-    v02 = torch.rand(n_face, 1) * (v0_max - v0_min) + v0_min
-    p2 = torch.cat([x2, y2, z2, e2, t2, r2, mu2, v02], dim=1)
-    
-    # y=0
-    x3 = torch.rand(n_face, 1) * config.Lx
-    t3 = torch.rand(n_face, 1) * (t_max - t_min) + t_min
-    z3 = torch.rand(n_face, 1) * t3
-    y3 = torch.zeros(n_face, 1)
-    e3 = torch.rand(n_face, 1) * (e_max - e_min) + e_min
-    r3 = torch.rand(n_face, 1) * (r_max - r_min) + r_min
-    mu3 = torch.rand(n_face, 1) * (mu_max - mu_min) + mu_min
-    v03 = torch.rand(n_face, 1) * (v0_max - v0_min) + v0_min
-    p3 = torch.cat([x3, y3, z3, e3, t3, r3, mu3, v03], dim=1)
-    
-    # y=Ly
-    x4 = torch.rand(n_face, 1) * config.Lx
-    t4 = torch.rand(n_face, 1) * (t_max - t_min) + t_min
-    z4 = torch.rand(n_face, 1) * t4
-    y4 = torch.ones(n_face, 1) * config.Ly
-    e4 = torch.rand(n_face, 1) * (e_max - e_min) + e_min
-    r4 = torch.rand(n_face, 1) * (r_max - r_min) + r_min
-    mu4 = torch.rand(n_face, 1) * (mu_max - mu_min) + mu_min
-    v04 = torch.rand(n_face, 1) * (v0_max - v0_min) + v0_min
-    p4 = torch.cat([x4, y4, z4, e4, t4, r4, mu4, v04], dim=1)
+    # Helper for fallback
+    def get_standard_face(face_type, n_f):
+        if face_type == 0: # x=0
+            x = torch.zeros(n_f, 1)
+            y = torch.rand(n_f, 1) * config.Ly
+        elif face_type == 1: # x=Lx
+            x = torch.ones(n_f, 1) * config.Lx
+            y = torch.rand(n_f, 1) * config.Ly
+        elif face_type == 2: # y=0
+            x = torch.rand(n_f, 1) * config.Lx
+            y = torch.zeros(n_f, 1)
+        elif face_type == 3: # y=Ly
+            x = torch.rand(n_f, 1) * config.Lx
+            y = torch.ones(n_f, 1) * config.Ly
+            
+        z_top_local = config.get_domain_height(x, y)
+        t = z_top_local
+        z = torch.rand(n_f, 1) * t
+        
+        e_min, e_max = _get_e_range()
+        e = torch.rand(n_f, 1) * (e_max - e_min) + e_min
+        r_min, r_max = _get_restitution_range()
+        restitution = torch.rand(n_f, 1) * (r_max - r_min) + r_min
+        mu_min, mu_max = _get_friction_range()
+        friction = torch.rand(n_f, 1) * (mu_max - mu_min) + mu_min
+        v0_min, v0_max = _get_impact_velocity_range()
+        impact_velocity = torch.rand(n_f, 1) * (v0_max - v0_min) + v0_min
+        return torch.cat([x, y, z, e, t, restitution, friction, impact_velocity], dim=1)
+
+    p1 = get_standard_face(0, n_face)
+    p2 = get_standard_face(1, n_face)
+    p3 = get_standard_face(2, n_face)
+    p4 = get_standard_face(3, n_face)
     
     return torch.cat([p1, p2, p3, p4], dim=0)
 
@@ -535,7 +699,7 @@ def sample_bottom(n):
     return torch.cat([x_bot, y_bot, z_bot, e_bot, t_bot, r_bot, mu_bot, v0_bot], dim=1)
 
 def get_data(prev_data=None, residuals=None):
-    z_min, z_max = config.Layer_Interfaces[0], config.Layer_Interfaces[1]
+    z_min, z_max = 0.0, config.H
     
     # Decide whether to use residual-based sampling (50% uniform, 50% residual-based)
     use_residual = (prev_data is not None and residuals is not None)
