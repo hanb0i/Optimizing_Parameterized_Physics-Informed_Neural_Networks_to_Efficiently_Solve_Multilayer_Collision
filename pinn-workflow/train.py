@@ -81,6 +81,10 @@ def train():
     if config.FORCE_SOFT_SIDE_BC_FROM_START:
         config.USE_HARD_SIDE_BC = False
         pinn.set_hard_bc(False)
+    if str(getattr(config, "GEOMETRY_MODE", "box")).lower() == "cad":
+        # Hard side masks assume a unit box boundary; disable for arbitrary CAD.
+        config.USE_HARD_SIDE_BC = False
+        pinn.set_hard_bc(False)
     
     # Initialize Optimizers
     # SOAP improves conditioning for stiff, multi-term PINN losses; prefer it when Adam/AdamW stagnates.

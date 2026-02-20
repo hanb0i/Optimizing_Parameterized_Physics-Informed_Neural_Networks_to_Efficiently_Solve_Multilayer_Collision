@@ -786,103 +786,116 @@ def get_data_cad(prev_data=None, residuals=None):
         )
         interior_xyz = np.concatenate([interior_dict["x"], interior_dict["y"], interior_dict["z"]], axis=1)
 
-        boundary = tess_sample_boundary(surface, int(config.N_SIDES + config.N_TOP_LOAD + config.N_TOP_FREE + config.N_BOTTOM) * 2)
-        bx = boundary["x"][:, 0]
-        by = boundary["y"][:, 0]
-        bz = boundary["z"][:, 0]
-        bnz = boundary["normal_z"][:, 0]
-        nz_thresh = float(getattr(config, "CAD_NORMAL_Z_THRESH", 0.85))
+        # Auto boundary-condition split by z:
+        # - clamp bottom cap (Dirichlet u=0) using z <= z_min + eps
+        # - load top cap patch (pressure) using z >= z_max - eps + XY patch
+        # - free: all remaining boundary points (traction-free)
+        clamp_frac = float(getattr(config, "CAD_CLAMP_Z_FRAC", 0.02))
+        load_frac = float(getattr(config, "CAD_LOAD_Z_FRAC", 0.02))
+        z_min = float(surface.bounds_min[2])
+        z_max = float(surface.bounds_max[2])
+        z_span_eff = max(1e-12, z_max - z_min)
+        z_clamp = z_min + clamp_frac * z_span_eff
+        z_load = z_max - load_frac * z_span_eff
 
-        top_mask = bnz >= nz_thresh
-        bot_mask = bnz <= -nz_thresh
-        side_mask = ~(top_mask | bot_mask)
+        need_clamp = int(config.N_SIDES)
+        need_load = int(config.N_TOP_LOAD)
+        need_free = int(config.N_TOP_FREE)
 
-        top_pts = np.stack([bx[top_mask], by[top_mask], bz[top_mask]], axis=1)
-        bot_pts = np.stack([bx[bot_mask], by[bot_mask], bz[bot_mask]], axis=1)
-        side_pts = np.stack([bx[side_mask], by[side_mask], bz[side_mask]], axis=1)
+        clamp_pts_list, clamp_n_list = [], []
+        load_pts_list, load_n_list = [], []
+        free_pts_list, free_n_list = [], []
 
-        if side_pts.shape[0] < int(config.N_SIDES):
-            # Fallback to AABB sides if STL classification is insufficient
-            n_face = int(config.N_SIDES) // 4
-            x0 = sample_uniform_box(
-                n_face,
-                (dst_min[0], dst_min[1], dst_min[2]),
-                (dst_min[0], dst_max[1], dst_max[2]),
-            )
-            x1 = sample_uniform_box(
-                n_face,
-                (dst_max[0], dst_min[1], dst_min[2]),
-                (dst_max[0], dst_max[1], dst_max[2]),
-            )
-            y0 = sample_uniform_box(
-                n_face,
-                (dst_min[0], dst_min[1], dst_min[2]),
-                (dst_max[0], dst_min[1], dst_max[2]),
-            )
-            y1 = sample_uniform_box(
-                n_face,
-                (dst_min[0], dst_max[1], dst_min[2]),
-                (dst_max[0], dst_max[1], dst_max[2]),
-            )
-            sides_xyz = np.concatenate([x0, x1, y0, y1], axis=0)
-        else:
-            sides_xyz = side_pts[: int(config.N_SIDES)]
+        def _stack_region(pts_list, n_list, n_take):
+            if not pts_list:
+                return np.zeros((0, 3), dtype=np.float64), np.zeros((0, 3), dtype=np.float64)
+            pts = np.concatenate(pts_list, axis=0)
+            nrm = np.concatenate(n_list, axis=0)
+            return pts[:n_take], nrm[:n_take]
 
-        z_top = float(dst_max[2])
-        if top_pts.shape[0] == 0:
-            top_pts = sample_uniform_rect_on_plane(
-                int(config.N_TOP_LOAD + config.N_TOP_FREE),
+        batch = int(10 * (need_clamp + need_load + need_free + int(config.N_BOTTOM)))
+        for _ in range(20):
+            boundary = tess_sample_boundary(surface, batch)
+            bx = boundary["x"][:, 0]
+            by = boundary["y"][:, 0]
+            bz = boundary["z"][:, 0]
+            bnx = boundary["normal_x"][:, 0]
+            bny = boundary["normal_y"][:, 0]
+            bnz = boundary["normal_z"][:, 0]
+
+            pts = np.stack([bx, by, bz], axis=1)
+            nrm = np.stack([bnx, bny, bnz], axis=1)
+
+            is_clamp = bz <= z_clamp
+            is_top = bz >= z_load
+            in_patch = (
+                (bx >= float(config.LOAD_PATCH_X[0]))
+                & (bx <= float(config.LOAD_PATCH_X[1]))
+                & (by >= float(config.LOAD_PATCH_Y[0]))
+                & (by <= float(config.LOAD_PATCH_Y[1]))
+            )
+            is_load = is_top & in_patch
+            is_free = ~(is_clamp | is_load)
+
+            if sum(p.shape[0] for p in clamp_pts_list) < need_clamp:
+                clamp_pts_list.append(pts[is_clamp])
+                clamp_n_list.append(nrm[is_clamp])
+            if sum(p.shape[0] for p in load_pts_list) < need_load:
+                load_pts_list.append(pts[is_load])
+                load_n_list.append(nrm[is_load])
+            if sum(p.shape[0] for p in free_pts_list) < need_free:
+                free_pts_list.append(pts[is_free])
+                free_n_list.append(nrm[is_free])
+
+            if (
+                sum(p.shape[0] for p in clamp_pts_list) >= need_clamp
+                and sum(p.shape[0] for p in load_pts_list) >= need_load
+                and sum(p.shape[0] for p in free_pts_list) >= need_free
+            ):
+                break
+
+        sides_xyz, _sides_n = _stack_region(clamp_pts_list, clamp_n_list, need_clamp)
+        top_load_xyz, top_load_n = _stack_region(load_pts_list, load_n_list, need_load)
+        top_free_xyz, top_free_n = _stack_region(free_pts_list, free_n_list, need_free)
+
+        if sides_xyz.shape[0] < need_clamp:
+            sides_xyz = sample_uniform_rect_on_plane(
+                need_clamp,
                 float(dst_min[0]),
                 float(dst_max[0]),
                 float(dst_min[1]),
                 float(dst_max[1]),
-                z_top,
+                float(dst_min[2]),
             )
-
-        # Split top into load patch vs free
-        in_patch = (
-            (top_pts[:, 0] >= float(config.LOAD_PATCH_X[0]))
-            & (top_pts[:, 0] <= float(config.LOAD_PATCH_X[1]))
-            & (top_pts[:, 1] >= float(config.LOAD_PATCH_Y[0]))
-            & (top_pts[:, 1] <= float(config.LOAD_PATCH_Y[1]))
-        )
-        load_pts = top_pts[in_patch]
-        free_pts = top_pts[~in_patch]
-        if load_pts.shape[0] < int(config.N_TOP_LOAD):
+        if top_load_xyz.shape[0] < need_load:
             top_load_xyz = sample_uniform_rect_on_plane(
-                int(config.N_TOP_LOAD),
+                need_load,
                 float(config.LOAD_PATCH_X[0]),
                 float(config.LOAD_PATCH_X[1]),
                 float(config.LOAD_PATCH_Y[0]),
                 float(config.LOAD_PATCH_Y[1]),
-                z_top,
+                float(dst_max[2]),
             )
-        else:
-            top_load_xyz = load_pts[: int(config.N_TOP_LOAD)]
-        if free_pts.shape[0] < int(config.N_TOP_FREE):
+            top_load_n = np.tile(np.array([[0.0, 0.0, 1.0]], dtype=np.float64), (need_load, 1))
+        if top_free_xyz.shape[0] < need_free:
             top_free_xyz = sample_uniform_rect_on_plane(
-                int(config.N_TOP_FREE),
+                need_free,
                 float(dst_min[0]),
                 float(dst_max[0]),
                 float(dst_min[1]),
                 float(dst_max[1]),
-                z_top,
+                float(dst_max[2]),
             )
-        else:
-            top_free_xyz = free_pts[: int(config.N_TOP_FREE)]
+            top_free_n = np.tile(np.array([[0.0, 0.0, 1.0]], dtype=np.float64), (need_free, 1))
 
-        z_bot = float(dst_min[2])
-        if bot_pts.shape[0] < int(config.N_BOTTOM):
-            bottom_xyz = sample_uniform_rect_on_plane(
-                int(config.N_BOTTOM),
-                float(dst_min[0]),
-                float(dst_max[0]),
-                float(dst_min[1]),
-                float(dst_max[1]),
-                z_bot,
-            )
-        else:
-            bottom_xyz = bot_pts[: int(config.N_BOTTOM)]
+        bottom_xyz = sample_uniform_rect_on_plane(
+            int(config.N_BOTTOM),
+            float(dst_min[0]),
+            float(dst_max[0]),
+            float(dst_min[1]),
+            float(dst_max[1]),
+            float(dst_min[2]),
+        )
 
     # NOTE: The PiNN is trained/defined in the returned coordinate system. If you disable
     # normalization, you must also disable hard side BC masks (`USE_HARD_SIDE_BC`) or
@@ -901,10 +914,14 @@ def get_data_cad(prev_data=None, residuals=None):
     top_free = torch.cat([top_free_t, _cad_params_for_points(len(top_free_t), thickness)], dim=1)
     bottom = torch.cat([bottom_t, _cad_params_for_points(len(bottom_t), thickness)], dim=1)
 
-    return {
+    out = {
         "interior": [interior],
         "sides": [sides],
         "top_load": top_load,
         "top_free": top_free,
         "bottom": bottom,
     }
+    if sampler == "tessellation":
+        out["top_load_normal"] = torch.tensor(top_load_n, dtype=torch.float32)
+        out["top_free_normal"] = torch.tensor(top_free_n, dtype=torch.float32)
+    return out

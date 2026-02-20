@@ -84,6 +84,9 @@ def main():
         raise FileNotFoundError("Could not find `pinn_model.pth` in repo root or `pinn-workflow/`.")
 
     pinn = _load_model(ckpt, device)
+    # Hard side masks assume a unit box boundary; disable for CAD visualization.
+    config.USE_HARD_SIDE_BC = False
+    pinn.set_hard_bc(False)
 
     # Use CAD-aware training-data sampler to get top/bottom/side point sets
     d = data.get_data()

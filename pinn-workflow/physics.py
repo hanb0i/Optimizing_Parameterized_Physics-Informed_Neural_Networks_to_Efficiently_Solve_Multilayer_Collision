@@ -3,6 +3,11 @@ import torch
 import torch.autograd as autograd
 import pinn_config as config
 
+def _traction_from_stress(sig, normals):
+    # sig: (N,3,3), normals: (N,3) -> traction: (N,3)
+    n = normals.unsqueeze(2)
+    return torch.bmm(sig, n).squeeze(2)
+
 def compliance_scale(E, t):
     e_safe = torch.clamp(E, min=1e-8)
     t_safe = torch.clamp(t, min=1e-8)
@@ -176,15 +181,30 @@ def compute_loss(model, data, device, weights=None):
     u_top = v_top / E_local_load
     grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
-    
-    T = sig_top[:, :, 2]
-    
-    mask = load_mask(x_top_load).unsqueeze(1)  # (N, 1)
-    target_load = -config.p0 * mask
+
+    cad_normals = data.get("top_load_normal", None)
+    if cad_normals is not None:
+        n_top = cad_normals.to(device)
+        T = _traction_from_stress(sig_top, n_top)
+        target = -float(config.p0) * n_top
+        mask = None
+        target_load = None
+    else:
+        T = sig_top[:, :, 2]
+        mask = load_mask(x_top_load).unsqueeze(1)  # (N, 1)
+        target_load = -config.p0 * mask
+        target = torch.cat(
+            [
+                torch.zeros_like(target_load),
+                torch.zeros_like(target_load),
+                target_load,
+            ],
+            dim=1,
+        )
     impact_contact_loss = torch.zeros((), device=x_top_load.device)
     friction_coulomb_loss = torch.zeros((), device=x_top_load.device)
     friction_stick_loss = torch.zeros((), device=x_top_load.device)
-    if getattr(config, "USE_EXPLICIT_IMPACT_PHYSICS", False):
+    if cad_normals is None and getattr(config, "USE_EXPLICIT_IMPACT_PHYSICS", False):
         # Restitution-aware normal traction:
         # lower restitution -> stronger dissipative/impact contact response.
         restitution_local = torch.clamp(x_top_load[:, 5:6], 0.0, 1.0)
@@ -219,20 +239,18 @@ def compute_loss(model, data, device, weights=None):
         losses['friction_stick'] = friction_stick_loss
         total_loss += weights.get('friction_stick', 0.0) * friction_stick_loss
 
-    target = torch.cat([
-        torch.zeros_like(target_load),
-        torch.zeros_like(target_load),
-        target_load
-    ], dim=1)
-    
-    loss_load = torch.mean((T - target)**2)
+    loss_load = torch.mean((T - target) ** 2)
     losses['load'] = loss_load
     total_loss += weights['load'] * loss_load
     
     patch_area = (config.LOAD_PATCH_X[1] - config.LOAD_PATCH_X[0]) * (
         config.LOAD_PATCH_Y[1] - config.LOAD_PATCH_Y[0]
     )
-    external_work = (-config.p0 * u_top[:, 2:3] * mask).mean() * patch_area
+    if cad_normals is None:
+        external_work = (-config.p0 * u_top[:, 2:3] * mask).mean() * patch_area
+    else:
+        # Approximate pressure work via Monte Carlo on the loaded surface samples.
+        external_work = (target * u_top).sum(dim=1, keepdim=True).mean() * patch_area
     energy_loss = internal_energy - external_work
     losses['energy'] = energy_loss
     total_loss += weights['energy'] * energy_loss
@@ -250,31 +268,42 @@ def compute_loss(model, data, device, weights=None):
     u_top_free = v_top_free / E_local_free
     grad_u_free = gradient(u_top_free, x_top_free)
     sig_top_free = stress(strain(grad_u_free), lm_free, mu_free)
-    T_free = sig_top_free[:, :, 2]
-    
-    loss_free = torch.mean(T_free**2)
+    cad_normals_free = data.get("top_free_normal", None)
+    if cad_normals_free is not None:
+        n_free = cad_normals_free.to(device)
+        T_free = _traction_from_stress(sig_top_free, n_free)
+        loss_free = torch.mean(T_free ** 2)
+    else:
+        T_free = sig_top_free[:, :, 2]
+        loss_free = torch.mean(T_free**2)
     losses['free_top'] = loss_free
     total_loss += weights['bc'] * loss_free
     
-    # Bottom Free
-    x_bot = data['bottom'].to(device).detach().clone().requires_grad_(True)
+    # Bottom Free (skip when CAD bottom is clamped)
+    if str(getattr(config, "GEOMETRY_MODE", "box")).lower() == "cad" and bool(
+        getattr(config, "CAD_BOTTOM_CLAMPED", True)
+    ):
+        loss_bot = torch.zeros((), device=device)
+        losses['free_bot'] = loss_bot
+    else:
+        # Bottom Free
+        x_bot = data['bottom'].to(device).detach().clone().requires_grad_(True)
     
-    E_local_bot = x_bot[:, 3:4]
-    lm_bot = (E_local_bot * nu) / ((1 + nu) * (1 - 2 * nu))
-    mu_bot = E_local_bot / (2 * (1 + nu))
-    lm_bot = lm_bot.unsqueeze(2)
-    mu_bot = mu_bot.unsqueeze(2)
-    
-    v_bot = model(x_bot, 0)
-    u_bot = v_bot / E_local_bot
-    grad_u_bot = gradient(u_bot, x_bot)
-    sig_bot = stress(strain(grad_u_bot), lm_bot, mu_bot)
-    
-    T_bot = -sig_bot[:, :, 2]
-    loss_bot = torch.mean(T_bot**2)
-    losses['free_bot'] = loss_bot
-    losses['free_bot'] = loss_bot
-    total_loss += weights['bc'] * loss_bot
+        E_local_bot = x_bot[:, 3:4]
+        lm_bot = (E_local_bot * nu) / ((1 + nu) * (1 - 2 * nu))
+        mu_bot = E_local_bot / (2 * (1 + nu))
+        lm_bot = lm_bot.unsqueeze(2)
+        mu_bot = mu_bot.unsqueeze(2)
+        
+        v_bot = model(x_bot, 0)
+        u_bot = v_bot / E_local_bot
+        grad_u_bot = gradient(u_bot, x_bot)
+        sig_bot = stress(strain(grad_u_bot), lm_bot, mu_bot)
+        
+        T_bot = -sig_bot[:, :, 2]
+        loss_bot = torch.mean(T_bot**2)
+        losses['free_bot'] = loss_bot
+        total_loss += weights['bc'] * loss_bot
     
     # --- 4. Supervised Data Loss (Hybrid/Parametric) ---
     if 'x_data' in data and 'u_data' in data:
@@ -344,14 +373,20 @@ def compute_residuals(model, data, device):
     u_top = v_top / E_local_load
     grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
-    T = sig_top[:, :, 2]
-    mask = load_mask(x_top_load).unsqueeze(1)
-    target_load = -config.p0 * mask
-    target = torch.cat([
-        torch.zeros_like(target_load),
-        torch.zeros_like(target_load),
-        target_load,
-    ], dim=1)
+    cad_normals = data.get("top_load_normal", None)
+    if cad_normals is not None:
+        n_top = cad_normals.to(device)
+        T = _traction_from_stress(sig_top, n_top)
+        target = -float(config.p0) * n_top
+    else:
+        T = sig_top[:, :, 2]
+        mask = load_mask(x_top_load).unsqueeze(1)
+        target_load = -config.p0 * mask
+        target = torch.cat([
+            torch.zeros_like(target_load),
+            torch.zeros_like(target_load),
+            target_load,
+        ], dim=1)
     load_residual = torch.sqrt(torch.sum((T - target) ** 2, dim=1))
     residuals['top_load'] = load_residual.cpu()
     
@@ -368,11 +403,23 @@ def compute_residuals(model, data, device):
     u_top_free = v_top_free / E_local_free
     grad_u_free = gradient(u_top_free, x_top_free)
     sig_top_free = stress(strain(grad_u_free), lm_free, mu_free)
-    T_free = sig_top_free[:, :, 2]
-    free_residual = torch.sqrt(torch.sum(T_free**2, dim=1))
+    cad_normals_free = data.get("top_free_normal", None)
+    if cad_normals_free is not None:
+        n_free = cad_normals_free.to(device)
+        T_free = _traction_from_stress(sig_top_free, n_free)
+        free_residual = torch.sqrt(torch.sum(T_free ** 2, dim=1))
+    else:
+        T_free = sig_top_free[:, :, 2]
+        free_residual = torch.sqrt(torch.sum(T_free**2, dim=1))
     residuals['top_free'] = free_residual.cpu()
     
     # --- Bottom Residuals ---
+    if str(getattr(config, "GEOMETRY_MODE", "box")).lower() == "cad" and bool(
+        getattr(config, "CAD_BOTTOM_CLAMPED", True)
+    ):
+        n_bot = int(data['bottom'].shape[0]) if 'bottom' in data else 0
+        residuals['bottom'] = torch.zeros(n_bot, device=device).cpu()
+        return residuals
     x_bot = data['bottom'].to(device).detach().clone().requires_grad_(True)
     
     E_local_bot = x_bot[:, 3:4]

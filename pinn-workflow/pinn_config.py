@@ -8,17 +8,20 @@ H = 0.1  # Total height (baseline thickness)
 # Geometry mode:
 # - "box": default unit plate domain (current behavior)
 # - "cad": derive domain extents from an STL and sample in its bounding box
-GEOMETRY_MODE = "box"
+GEOMETRY_MODE = "cad"
 # Path to an STL file when `GEOMETRY_MODE="cad"`.
-CAD_STL_PATH = None  # e.g. "pinn-workflow/stl/unit_plate.stl"
+CAD_STL_PATH = "pinn-workflow/sphere.stl"  # e.g. "pinn-workflow/stl/unit_plate.stl"
 # If True, affinely map CAD bounds to [0,Lx]x[0,Ly]x[0,H] before training/inference.
 CAD_NORMALIZE_TO_CONFIG_BOUNDS = True
 # CAD sampler:
 # - "aabb": sample from CAD bounding box (fast, plate-only)
 # - "tessellation": PhysicsNeMo-like tessellation workflow (boundary on surface + interior via inside-test/SDF)
-CAD_SAMPLER = "aabb"
-# Surface classification threshold for tessellation mode
-CAD_NORMAL_Z_THRESH = 0.85
+CAD_SAMPLER = "tessellation"
+# CAD boundary-condition defaults for general meshes:
+# Up is +z. Supported on bottom (clamped), loaded from top (pressure patch).
+CAD_CLAMP_Z_FRAC = 0.02  # bottom cap thickness as fraction of (z_max - z_min)
+CAD_LOAD_Z_FRAC = 0.02   # top cap thickness as fraction of (z_max - z_min)
+CAD_BOTTOM_CLAMPED = True
 # Single layer (homogeneous material)
 # z goes from 0 to H
 Layer_Interfaces = [0.0, H]
