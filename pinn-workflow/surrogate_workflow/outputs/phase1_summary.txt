@@ -1,12 +1,12 @@
 Phase 1 Surrogate Summary
 
 Design parameters: E, thickness, restitution, friction, impact_velocity
-Train MSE: 4.182543e-05
-Val MSE: 1.892619e-04
-Test MSE: 9.877938e-05
+Train MSE: 1.072407e-03
+Val MSE: 4.852686e-03
+Test MSE: 2.532708e-03
 
 Optimization safety check:
   mu*: [1.939 0.112 0.899 0.224 1.357]
-  surrogate y(mu*): 5.758150e-03
-  baseline y(mu*): 1.423692e-02
-  baseline y(mu_mid): 6.421198e-01
+  surrogate y(mu*): 2.915697e-02
+  baseline y(mu*): 7.209007e-02
+  baseline y(mu_mid): 3.251438e+00

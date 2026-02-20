@@ -4,6 +4,11 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+
+# Global Font Styling
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = ['Inter', 'Outfit', 'Roboto', 'Arial', 'sans-serif']
+plt.rcParams['font.size'] = 16
 import scipy.interpolate
 
 # Add paths
