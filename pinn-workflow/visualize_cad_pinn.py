@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -69,6 +70,57 @@ def _parse_args() -> argparse.Namespace:
         default=0.5,
         help="Scale factor for visualizing deformed geometry.",
     )
+    parser.add_argument(
+        "--field",
+        choices=["uz", "umag"],
+        default="uz",
+        help="Field to color (default: uz). Use `umag` for displacement magnitude.",
+    )
+    parser.add_argument(
+        "--cmap",
+        default="jet",
+        help="Matplotlib colormap name (default: jet).",
+    )
+    parser.add_argument(
+        "--vmin",
+        type=float,
+        default=None,
+        help="Optional fixed color scale minimum. If omitted, uses data min.",
+    )
+    parser.add_argument(
+        "--vmax",
+        type=float,
+        default=None,
+        help="Optional fixed color scale maximum. If omitted, uses data max.",
+    )
+    parser.add_argument(
+        "--symmetric",
+        action="store_true",
+        help="Use symmetric color limits about 0 based on max(abs(value)).",
+    )
+    parser.add_argument(
+        "--percentile",
+        type=float,
+        default=None,
+        help="Optional robust color limits using [p, 100-p] percentiles (e.g. 1.0).",
+    )
+    parser.add_argument(
+        "--elev",
+        type=float,
+        default=25.0,
+        help="3D view elevation angle (degrees).",
+    )
+    parser.add_argument(
+        "--azim",
+        type=float,
+        default=-60.0,
+        help="3D view azimuth angle (degrees).",
+    )
+    parser.add_argument(
+        "--hide-axes",
+        action="store_true",
+        help="Hide axes for a more FEA-post style render.",
+    )
     return parser.parse_args()
 
 
@@ -85,7 +137,13 @@ def _render_mesh(
     face_values: np.ndarray,
     out_path: str,
     title: str,
-    cmap_name: str = "viridis",
+    cmap_name: str,
+    vmin: float,
+    vmax: float,
+    label: str,
+    elev: float,
+    azim: float,
+    hide_axes: bool,
 ) -> None:
     tri = np.asarray(triangles_xyz, dtype=np.float64)
     vals = np.asarray(face_values, dtype=np.float64).reshape(-1)
@@ -97,18 +155,17 @@ def _render_mesh(
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection="3d")
 
-    vmin = float(np.nanmin(vals))
-    vmax = float(np.nanmax(vals))
-    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+    if not np.isfinite(float(vmin)) or not np.isfinite(float(vmax)) or float(vmin) == float(vmax):
         vmin, vmax = -1.0, 1.0
 
     cmap = matplotlib.colormaps.get_cmap(cmap_name)
-    norm = colors.Normalize(vmin=vmin, vmax=vmax)
+    norm = colors.Normalize(vmin=float(vmin), vmax=float(vmax))
     face_colors = cmap(norm(vals))
 
     coll = Poly3DCollection(tri, facecolors=face_colors, linewidths=0.05, edgecolors=(0, 0, 0, 0.15))
     coll.set_alpha(1.0)
     ax.add_collection3d(coll)
+    ax.view_init(elev=float(elev), azim=float(azim))
 
     pts = tri.reshape(-1, 3)
     ax.set_xlim(float(np.min(pts[:, 0])), float(np.max(pts[:, 0])))
@@ -118,15 +175,64 @@ def _render_mesh(
 
     sm = cm.ScalarMappable(norm=norm, cmap=cmap)
     sm.set_array(vals)
-    fig.colorbar(sm, ax=ax, shrink=0.6, label="Uz (pred)")
+    fig.colorbar(sm, ax=ax, shrink=0.6, label=label)
 
     ax.set_title(title)
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_zlabel("z")
+    if hide_axes:
+        ax.set_axis_off()
+    else:
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_zlabel("z")
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
+
+
+def _auto_clim(
+    values: np.ndarray,
+    *,
+    vmin: Optional[float],
+    vmax: Optional[float],
+    symmetric: bool,
+    percentile: Optional[float],
+) -> Tuple[float, float]:
+    v = np.asarray(values, dtype=np.float64).reshape(-1)
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return -1.0, 1.0
+
+    if percentile is not None:
+        p = float(percentile)
+        p = max(0.0, min(49.9, p))
+        lo = float(np.percentile(v, p))
+        hi = float(np.percentile(v, 100.0 - p))
+    else:
+        lo = float(np.min(v))
+        hi = float(np.max(v))
+
+    if symmetric:
+        m = max(abs(lo), abs(hi))
+        lo, hi = -m, m
+
+    if vmin is not None:
+        lo = float(vmin)
+    if vmax is not None:
+        hi = float(vmax)
+
+    if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
+        return -1.0, 1.0
+    return lo, hi
+
+
+def _field_from_u(u: np.ndarray, field: str) -> Tuple[np.ndarray, str]:
+    u = np.asarray(u, dtype=np.float64)
+    if u.ndim != 2 or u.shape[1] != 3:
+        raise ValueError(f"Expected u shaped (N,3), got {u.shape}")
+    field = str(field).lower()
+    if field == "umag":
+        return np.linalg.norm(u, axis=1), "|U| (pred)"
+    return u[:, 2], "Uz (pred)"
 
 
 def _load_model(model_path: str, device: torch.device) -> model.MultiLayerPINN:
@@ -165,7 +271,12 @@ def _u_from_v(v: np.ndarray, E_val: float, thickness: float) -> np.ndarray:
 
 
 def main():
-    device = torch.device("cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
 
     args = _parse_args()
 
@@ -242,44 +353,11 @@ def main():
         v = pinn(torch.tensor(pts, dtype=torch.float32).to(device)).cpu().numpy()
     u = _u_from_v(v, E_val, thickness)
 
-    uz = u[:, 2]
-    uz_min, uz_max = float(np.min(uz)), float(np.max(uz))
-    print(f"CAD surface Uz range: [{uz_min:.6f}, {uz_max:.6f}]")
+    base = os.path.basename(str(config.CAD_STL_PATH))
+    field_tag = "uz" if str(args.field).lower() == "uz" else "umag"
+    vals_bnd, label = _field_from_u(u, args.field)
 
-    # 3D scatter on CAD surface, colored by Uz
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection="3d")
-    sc = ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], c=uz, cmap="viridis", s=2)
-    fig.colorbar(sc, ax=ax, shrink=0.6, label="Uz (pred)")
-    ax.set_title(f"CAD STL surface sampled points colored by PiNN Uz ({os.path.basename(str(config.CAD_STL_PATH))})")
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_zlabel("z")
-    _set_box_aspect_from_points(ax, xyz)
-    fig.tight_layout()
-    fig.savefig(os.path.join(out_dir, "cad_surface_uz_scatter.png"), dpi=200)
-    plt.close(fig)
-
-    # Deformed visualization (scaled for visibility)
-    scale = 2.0
-    xyz_def = xyz.copy()
-    xyz_def[:, 2] = xyz_def[:, 2] + scale * uz
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection="3d")
-    sc = ax.scatter(xyz_def[:, 0], xyz_def[:, 1], xyz_def[:, 2], c=uz, cmap="viridis", s=2)
-    fig.colorbar(sc, ax=ax, shrink=0.6, label="Uz (pred)")
-    ax.set_title(
-        f"CAD surface (deformed) colored by PiNN Uz (scale={scale}) ({os.path.basename(str(config.CAD_STL_PATH))})"
-    )
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_zlabel("z")
-    _set_box_aspect_from_points(ax, xyz_def)
-    fig.tight_layout()
-    fig.savefig(os.path.join(out_dir, "cad_surface_uz_deformed_scatter.png"), dpi=200)
-    plt.close(fig)
-
-    # FEA-like: render the actual STL triangle mesh, colored by predicted Uz
+    # FEA-like: render the actual STL triangle mesh, colored by predicted field
     tri = surface.triangles.astype(np.float64, copy=False)  # (T,3,3)
     tri_pts = tri.reshape(-1, 3)
     tri_params = np.stack(
@@ -296,21 +374,94 @@ def main():
     with torch.no_grad():
         v_tri = pinn(torch.tensor(tri_in, dtype=torch.float32).to(device)).cpu().numpy()
     u_tri = _u_from_v(v_tri, E_val, thickness).reshape(tri.shape[0], 3, 3)
-    uz_face = np.mean(u_tri[:, :, 2], axis=1)  # (T,)
+    tri_vals, _ = _field_from_u(u_tri.reshape(-1, 3), args.field)
+    face_vals = np.mean(tri_vals.reshape(tri.shape[0], 3), axis=1)  # (T,)
+
+    all_vals = np.concatenate([vals_bnd.reshape(-1), face_vals.reshape(-1)], axis=0)
+    vmin, vmax = _auto_clim(
+        all_vals,
+        vmin=args.vmin,
+        vmax=args.vmax,
+        symmetric=bool(args.symmetric),
+        percentile=args.percentile,
+    )
+
+    print(f"CAD {field_tag} range (sampled): [{float(np.min(all_vals)):.6f}, {float(np.max(all_vals)):.6f}]")
+    print(f"Color limits: vmin={vmin:.6f}, vmax={vmax:.6f} (cmap={args.cmap})")
+
+    # 3D scatter on CAD surface, colored by field
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+    sc = ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], c=vals_bnd, cmap=str(args.cmap), s=2, vmin=vmin, vmax=vmax)
+    fig.colorbar(sc, ax=ax, shrink=0.6, label=label)
+    ax.view_init(elev=float(args.elev), azim=float(args.azim))
+    ax.set_title(f"CAD STL surface points colored by PiNN {field_tag} ({base})")
+    if args.hide_axes:
+        ax.set_axis_off()
+    else:
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_zlabel("z")
+    _set_box_aspect_from_points(ax, xyz)
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, f"cad_surface_{field_tag}_scatter.png"), dpi=200)
+    plt.close(fig)
+
+    # Deformed visualization (scaled for visibility)
+    xyz_def = xyz + float(args.deform_scale) * u
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+    sc = ax.scatter(
+        xyz_def[:, 0],
+        xyz_def[:, 1],
+        xyz_def[:, 2],
+        c=vals_bnd,
+        cmap=str(args.cmap),
+        s=2,
+        vmin=vmin,
+        vmax=vmax,
+    )
+    fig.colorbar(sc, ax=ax, shrink=0.6, label=label)
+    ax.view_init(elev=float(args.elev), azim=float(args.azim))
+    ax.set_title(f"CAD surface (deformed, scale={args.deform_scale}) colored by PiNN {field_tag} ({base})")
+    if args.hide_axes:
+        ax.set_axis_off()
+    else:
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_zlabel("z")
+    _set_box_aspect_from_points(ax, xyz_def)
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, f"cad_surface_{field_tag}_deformed_scatter.png"), dpi=200)
+    plt.close(fig)
 
     _render_mesh(
         triangles_xyz=tri,
-        face_values=uz_face,
-        out_path=os.path.join(out_dir, "cad_mesh_uz.png"),
-        title=f"STL mesh colored by PiNN Uz ({os.path.basename(str(config.CAD_STL_PATH))})",
+        face_values=face_vals,
+        out_path=os.path.join(out_dir, f"cad_mesh_{field_tag}.png"),
+        title=f"STL mesh colored by PiNN {field_tag} ({base})",
+        cmap_name=str(args.cmap),
+        vmin=vmin,
+        vmax=vmax,
+        label=label,
+        elev=float(args.elev),
+        azim=float(args.azim),
+        hide_axes=bool(args.hide_axes),
     )
 
     tri_def = tri + float(args.deform_scale) * u_tri
     _render_mesh(
         triangles_xyz=tri_def,
-        face_values=uz_face,
-        out_path=os.path.join(out_dir, "cad_mesh_uz_deformed.png"),
-        title=f"Deformed STL mesh (scale={args.deform_scale}) colored by PiNN Uz ({os.path.basename(str(config.CAD_STL_PATH))})",
+        face_values=face_vals,
+        out_path=os.path.join(out_dir, f"cad_mesh_{field_tag}_deformed.png"),
+        title=f"Deformed STL mesh (scale={args.deform_scale}) colored by PiNN {field_tag} ({base})",
+        cmap_name=str(args.cmap),
+        vmin=vmin,
+        vmax=vmax,
+        label=label,
+        elev=float(args.elev),
+        azim=float(args.azim),
+        hide_axes=bool(args.hide_axes),
     )
 
     # Top surface (load vs free) quick sanity plot
@@ -344,24 +495,29 @@ def main():
     with torch.no_grad():
         v_top = pinn(torch.tensor(top_pts, dtype=torch.float32).to(device)).cpu().numpy()
     u_top = _u_from_v(v_top, E_val, thickness)
-    uz_top = u_top[:, 2]
+    top_vals, _ = _field_from_u(u_top, args.field)
 
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection="3d")
-    sc = ax.scatter(top_xyz[:, 0], top_xyz[:, 1], top_xyz[:, 2], c=uz_top, cmap="viridis", s=3)
-    fig.colorbar(sc, ax=ax, shrink=0.6, label="Uz (pred)")
-    ax.set_title("Top surface points (load + free) colored by PiNN Uz")
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_zlabel("z")
+    sc = ax.scatter(top_xyz[:, 0], top_xyz[:, 1], top_xyz[:, 2], c=top_vals, cmap=str(args.cmap), s=3, vmin=vmin, vmax=vmax)
+    fig.colorbar(sc, ax=ax, shrink=0.6, label=label)
+    ax.view_init(elev=float(args.elev), azim=float(args.azim))
+    ax.set_title(f"Top surface points colored by PiNN {field_tag}")
+    if args.hide_axes:
+        ax.set_axis_off()
+    else:
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_zlabel("z")
     _set_box_aspect_from_points(ax, top_xyz)
     fig.tight_layout()
-    fig.savefig(os.path.join(out_dir, "cad_top_surface_uz.png"), dpi=200)
+    fig.savefig(os.path.join(out_dir, f"cad_top_surface_{field_tag}.png"), dpi=200)
     plt.close(fig)
 
     # CAD BC region plot (clamp/load/free) matching the tessellation sampler logic in `data.get_data_cad`.
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection="3d")
+    ax.view_init(elev=float(args.elev), azim=float(args.azim))
     clamp_cap = float(getattr(config, "CAD_CLAMP_Z_FRAC", 0.02)) * z_span
     z_clamp_thr = z_min + clamp_cap
     use_normal_filter = bool(getattr(config, "CAD_BC_NORMAL_FILTER", False))
@@ -383,9 +539,12 @@ def main():
     sc = ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], c=region, cmap="coolwarm", s=2, vmin=-1.0, vmax=1.0)
     fig.colorbar(sc, ax=ax, shrink=0.6, label="-1=clamp, 0=free, +1=load")
     ax.set_title("CAD surface regions used for BCs (clamp vs load vs free)")
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_zlabel("z")
+    if args.hide_axes:
+        ax.set_axis_off()
+    else:
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_zlabel("z")
     _set_box_aspect_from_points(ax, xyz)
     fig.tight_layout()
     fig.savefig(os.path.join(out_dir, "cad_surface_bc_regions.png"), dpi=200)
