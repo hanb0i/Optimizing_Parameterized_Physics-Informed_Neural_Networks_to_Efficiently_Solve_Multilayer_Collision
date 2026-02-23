@@ -5,7 +5,7 @@ import pinn_config as config
 
 
 class LayerNet(nn.Module):
-    def __init__(self, hidden_layers=2, hidden_units=32, activation=nn.Tanh()):
+    def __init__(self, hidden_layers=4, hidden_units=64, activation=nn.Tanh()):
         super().__init__()
         layers = []
         # Input: x, y, z_hat + 5 normalized params (E, t, r, mu, v0) + 3 physics features
@@ -83,8 +83,8 @@ class MultiLayerPINN(nn.Module):
     def __init__(self):
         super().__init__()
         self.layer = LayerNet(
-            hidden_layers=getattr(config, 'LAYERS', 4),
-            hidden_units=getattr(config, 'NEURONS', 64),
+            hidden_layers=config.LAYERS,
+            hidden_units=config.NEURONS,
         )
         
     def forward(self, x, layer_idx=0):
