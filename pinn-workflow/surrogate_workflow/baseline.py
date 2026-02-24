@@ -37,12 +37,25 @@ def _get_pinn():
 
 def compute_response(mu):
     """
-    mu: [E, thickness, restitution, friction, impact_velocity]
+    mu:
+      - legacy: [E, thickness, restitution, friction, impact_velocity]
+      - 3-layer: [E1, t1, E2, t2, E3, t3, restitution, friction, impact_velocity]
     Returns: Peak vertical displacement magnitude |Uz_max|
     """
     pinn, device = _get_pinn()
     
-    E_val, t_val, r_val, mu_fric, v0_val = mu
+    if len(mu) == 5:
+        E_val, t_val, r_val, mu_fric, v0_val = mu
+        E1, E2, E3 = E_val, E_val, E_val
+        t1 = t_val / 3.0
+        t2 = t_val / 3.0
+        t3 = t_val / 3.0
+    elif len(mu) == 9:
+        E1, t1, E2, t2, E3, t3, r_val, mu_fric, v0_val = mu
+        t_val = float(t1) + float(t2) + float(t3)
+        E_val = float(E3)
+    else:
+        raise ValueError(f"Expected mu length 5 or 9, got {len(mu)}")
     
     # Grid search for peak displacement on top surface
     nx = 11
@@ -52,13 +65,18 @@ def compute_response(mu):
     Xf, Yf = X.flatten(), Y.flatten()
     
     Zf = np.ones_like(Xf) * t_val
-    Tf = np.ones_like(Xf) * t_val
-    Ef = np.ones_like(Xf) * E_val
+    E1f = np.ones_like(Xf) * float(E1)
+    E2f = np.ones_like(Xf) * float(E2)
+    E3f = np.ones_like(Xf) * float(E3)
+    t1f = np.ones_like(Xf) * float(t1)
+    t2f = np.ones_like(Xf) * float(t2)
+    t3f = np.ones_like(Xf) * float(t3)
     Rf = np.ones_like(Xf) * r_val
     MFf = np.ones_like(Xf) * mu_fric
     Vf = np.ones_like(Xf) * v0_val
     
-    pts = np.stack([Xf, Yf, Zf, Ef, Tf, Rf, MFf, Vf], axis=1)
+    # Input layout: [x,y,z,E1,t1,E2,t2,E3,t3,r,mu,v0]
+    pts = np.stack([Xf, Yf, Zf, E1f, t1f, E2f, t2f, E3f, t3f, Rf, MFf, Vf], axis=1)
     
     with torch.no_grad():
         v = pinn(torch.tensor(pts, dtype=torch.float32).to(device)).cpu().numpy()

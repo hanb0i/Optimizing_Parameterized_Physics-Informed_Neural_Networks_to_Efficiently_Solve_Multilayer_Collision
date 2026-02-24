@@ -43,11 +43,37 @@ E_vals = [1.0] # Normalized
 nu_vals = [0.3]
 # Parameterized PINN settings (do not alter baseline values)
 E_RANGE = [1.0, 10.0]
-THICKNESS_RANGE = [0.05, 0.15]
+THICKNESS_RANGE = [0.05, 0.15]  # total thickness range (sum of layer thicknesses)
 RESTITUTION_RANGE = [0.1, 0.9]
 FRICTION_RANGE = [0.0, 0.6]
 IMPACT_VELOCITY_RANGE = [0.2, 2.0]
-PARAM_DIM = 5
+
+# --- 3-layer laminate parameterization (Version A: fixed Poisson's ratio) ---
+NUM_LAYERS = 3
+NU_FIXED = 0.3  # fixed Poisson's ratio used for all layers
+
+# Layer thickness sampling: sample total thickness in THICKNESS_RANGE, then sample fractions that sum to 1.
+LAYER_THICKNESS_FRACTION_MIN = 0.05  # lower bound to avoid vanishing layers
+
+# New parameter vector ordering (used by sampling and model input assembly).
+PARAM_NAMES = [
+    "E1",
+    "t1",
+    "E2",
+    "t2",
+    "E3",
+    "t3",
+    "restitution",
+    "friction",
+    "impact_velocity",
+]
+PARAM_DIM = len(PARAM_NAMES)
+
+# When matching a specific FEA case (physics-only), it can help to train with a single
+# fixed parameter vector so the collocation set represents one consistent geometry/material.
+TRAIN_FIXED_PARAMS = False
+TRAIN_FIXED_E = 1.0
+TRAIN_FIXED_TOTAL_THICKNESS = H
 
 # Optional: explicit E sweep values for `verify_parametric_pinn.py`.
 # If not set, it uses `np.linspace(E_RANGE[0], E_RANGE[1], PINN_VERIFY_E_STEPS)`.
@@ -94,9 +120,16 @@ PDE_LENGTH_SCALE = H
 USE_HARD_SIDE_BC = True
 HARD_BC_EPOCHS = 1000
 
+# Box-mode boundary conditions.
+# The FEA solver in `fea-workflow/solver/fem_solver.py` clamps x/y edges (Dirichlet).
+# Set True to match FEA (recommended for verification against `fea_solution.npy`).
+BOX_CLAMP_SIDES = True
+
 # Load patch boundaries (normalized coordinates)
 LOAD_PATCH_X = [Lx/3, 2*Lx/3]  # [0.333, 0.667]
 LOAD_PATCH_Y = [Ly/3, 2*Ly/3]  # [0.333, 0.667]
+# Match FEA solver's default: use a smooth quadratic load mask on the patch (max=1 at patch center).
+USE_SOFT_LOAD_MASK = True
 
 # --- Network Architecture ---
 LAYERS = 4
@@ -118,7 +151,8 @@ WEIGHTS = {
     'impact_contact': 0.0002,   # Reduced to preserve FEA parity in no-supervision mode
     'friction_coulomb': 0.001,  # Reduced to preserve FEA parity in no-supervision mode
     'friction_stick': 0.0005,   # Reduced to preserve FEA parity in no-supervision mode
-    'interface_u': 1.0,
+    'interface_u': 5.0,
+    'interface_t': 0.5,
     'data': 1.0
 }
 
@@ -137,6 +171,7 @@ N_SIDES = 2000  # Clamped side faces
 N_TOP_LOAD = 6000  # Load patch (more points to boost displacement)
 N_TOP_FREE = 2000  # Top free surface
 N_BOTTOM = 2000  # Bottom free surface
+N_INTERFACES = 4000  # Per interface plane (bonded 3-layer stack has 2 interfaces)
 UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
 
 #Resampling/perturbation control

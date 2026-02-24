@@ -187,15 +187,19 @@ def run_3layer_verification():
     
     Xp, Yp, Zp = np.meshgrid(x_p, y_p, z_ref, indexing='ij')
     # Flatten
-    pts_flat = np.zeros((Xp.size, 8))
+    pts_flat = np.zeros((Xp.size, 12))
     pts_flat[:, 0] = Xp.flatten()
     pts_flat[:, 1] = Yp.flatten()
     pts_flat[:, 2] = Zp.flatten()
-    pts_flat[:, 3] = ref_params['E']
-    pts_flat[:, 4] = ref_params['thickness']
-    pts_flat[:, 5] = ref_params['restitution']
-    pts_flat[:, 6] = ref_params['friction']
-    pts_flat[:, 7] = ref_params['impact_velocity']
+    pts_flat[:, 3] = ref_params['E']  # E1
+    pts_flat[:, 4] = ref_params['thickness'] / 3.0  # t1
+    pts_flat[:, 5] = ref_params['E']  # E2
+    pts_flat[:, 6] = ref_params['thickness'] / 3.0  # t2
+    pts_flat[:, 7] = ref_params['E']  # E3
+    pts_flat[:, 8] = ref_params['thickness'] / 3.0  # t3
+    pts_flat[:, 9] = ref_params['restitution']
+    pts_flat[:, 10] = ref_params['friction']
+    pts_flat[:, 11] = ref_params['impact_velocity']
     
     with torch.no_grad():
         v_pred = pinn_model(torch.tensor(pts_flat, dtype=torch.float32).to(device)).cpu().numpy()

@@ -34,13 +34,13 @@ def main():
         print(f"domain_volume (est): {float(d['domain_volume']):.6g}")
     if "top_load_area" in d:
         print(f"top_load_area (est): {float(d['top_load_area']):.6g}")
-    for k in ["interior", "sides"]:
+    for k in ["interior"]:
         pts = d[k][0]
         xyz = pts[:, 0:3]
         xyz_min = tuple(torch.min(xyz, dim=0).values.tolist())
         xyz_max = tuple(torch.max(xyz, dim=0).values.tolist())
         print(f"{k:>8}: {tuple(pts.shape)} xyz_min={xyz_min} xyz_max={xyz_max}")
-    for k in ["top_load", "top_free", "bottom"]:
+    for k in ["bottom_clamp", "top_load", "top_free", "side_free"]:
         pts = d[k]
         xyz = pts[:, 0:3]
         z_min = float(torch.min(xyz[:, 2]))

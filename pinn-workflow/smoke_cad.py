@@ -61,23 +61,30 @@ def _smoke_case(label: str, *, stl_path: str, sampler: str, normalize: bool, loa
     try:
         d = data.get_data()
 
-        for k in ["interior", "sides"]:
-            pts = d[k][0]
-            assert isinstance(pts, torch.Tensor)
-            assert pts.ndim == 2 and pts.shape[1] == 8, (k, tuple(pts.shape))
-            _assert_finite(k, pts)
-        for k in ["top_load", "top_free", "bottom"]:
+        pts = d["interior"][0]
+        assert isinstance(pts, torch.Tensor)
+        assert pts.ndim == 2 and pts.shape[1] == 12, ("interior", tuple(pts.shape))
+        _assert_finite("interior", pts)
+
+        for k in ["bottom_clamp", "top_load", "top_free", "side_free"]:
             pts = d[k]
             assert isinstance(pts, torch.Tensor)
-            assert pts.ndim == 2 and pts.shape[1] == 8, (k, tuple(pts.shape))
+            assert pts.ndim == 2 and pts.shape[1] == 12, (k, tuple(pts.shape))
             _assert_finite(k, pts)
 
+        assert "interfaces" in d and isinstance(d["interfaces"], list) and len(d["interfaces"]) == 2
+        for i, pts in enumerate(d["interfaces"]):
+            assert isinstance(pts, torch.Tensor)
+            assert pts.ndim == 2 and pts.shape[1] == 12, (f"interfaces[{i}]", tuple(pts.shape))
+            _assert_finite(f"interfaces[{i}]", pts)
+
+        assert "top_load_normal" in d and "top_free_normal" in d and "side_free_normal" in d, "boundary normals missing"
         if sampler == "tessellation":
-            assert "top_load_normal" in d and "top_free_normal" in d, "CAD normals missing (tessellation)"
             assert "domain_volume" in d and float(d["domain_volume"]) > 0.0, "domain_volume missing/invalid"
             assert "top_load_area" in d and float(d["top_load_area"]) >= 0.0, "top_load_area missing/invalid"
             _assert_finite("top_load_normal", d["top_load_normal"])
             _assert_finite("top_free_normal", d["top_free_normal"])
+            _assert_finite("side_free_normal", d["side_free_normal"])
 
         # Physics smoke: forward/backward through the loss (catches shape/BC/area-volume wiring issues).
         device = torch.device("cpu")
