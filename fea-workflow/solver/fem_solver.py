@@ -16,11 +16,32 @@ def solve_fem(cfg):
     nx, ny, nz = ne_x+1, ne_y+1, ne_z+1
     n_dof = nx * ny * nz * 3
     
-    # Pre-compute material matrices for each layer
-    # Expect cfg['material'] to be a list of dicts, or a single dict (for backward compatibility)
-    materials = cfg['material']
-    if isinstance(materials, dict):
-        materials = [materials]  # Single layer case
+    # --- Materials / Layering ---
+    # Backward compatible:
+    # - cfg['material'] can be a single dict: {'E':..., 'nu':...}
+    # - cfg['material'] can be a list of dicts (multi-material), and we split z uniformly across them.
+    #
+    # New (preferred for PINN parity):
+    # - cfg['layers'] = [{'t': t1, 'E': E1, 'nu': nu1}, ...] where sum(t) ~= H.
+    #   Element material is chosen by z-centroid vs cumulative thickness boundaries.
+    layers = cfg.get('layers', None)
+    if layers is not None:
+        materials = [{'E': float(l['E']), 'nu': float(l['nu'])} for l in layers]
+        layer_thicknesses = np.array([float(l.get('t', l.get('thickness'))) for l in layers], dtype=float)
+        if np.any(layer_thicknesses <= 0):
+            raise ValueError(f"All layer thicknesses must be > 0. Got: {layer_thicknesses}")
+        t_sum = float(layer_thicknesses.sum())
+        if t_sum <= 0:
+            raise ValueError("Sum of layer thicknesses must be > 0.")
+        # Normalize thicknesses to match H exactly (avoid drift if user passes fractions or slightly-off sums).
+        layer_thicknesses = layer_thicknesses * (float(H) / t_sum)
+    else:
+        # Pre-compute material matrices for each layer
+        # Expect cfg['material'] to be a list of dicts, or a single dict (for backward compatibility)
+        materials = cfg['material']
+        if isinstance(materials, dict):
+            materials = [materials]  # Single layer case
+        layer_thicknesses = None
         
     C_matrices = []
     lam_vals = []
@@ -79,24 +100,24 @@ def solve_fem(cfg):
     # Assembly
     print("Assembling...")
     
-    # Determine which layer each element belongs to
-    # Elements are indexed by k (z-direction) from 0 to ne_z-1
-    # We assume distinct layers stacked in Z.
-    # If materials is list of length N, we split ne_z into N chunks.
-    # Note: ne_z must be divisible by N for perfect alignment, or we handle approximate.
-    
     n_layers = len(materials)
-    layers_per_mat = ne_z // n_layers
-    if ne_z % n_layers != 0:
-        print(f"Warning: ne_z={ne_z} not divisible by n_layers={n_layers}. Layer boundaries may be approximate.")
     el_indices = np.arange(ne_x * ne_y * ne_z)
     ek, ej, ei = np.unravel_index(el_indices, (ne_z, ne_y, ne_x))
     
     # ek is the element index in Z direction (0 to ne_z-1)
-    # Determine material index for each element
-    # Simple mapping: mat_idx = ek // layers_per_mat
-    # Handle the remainder/clamping carefully
-    mat_indices = np.minimum(ek // layers_per_mat, n_layers - 1)
+    if layer_thicknesses is None:
+        # Old behavior: uniform split in element counts.
+        layers_per_mat = max(1, ne_z // n_layers)
+        if ne_z % n_layers != 0:
+            print(f"Warning: ne_z={ne_z} not divisible by n_layers={n_layers}. Layer boundaries may be approximate.")
+        mat_indices = np.minimum(ek // layers_per_mat, n_layers - 1)
+    else:
+        # New behavior: choose by z-centroid vs cumulative thickness boundaries.
+        zc = (ek.astype(float) + 0.5) * float(dz)  # centroid in [0,H]
+        bounds = np.concatenate([[0.0], np.cumsum(layer_thicknesses)])
+        bounds[-1] = float(H)
+        mat_indices = np.searchsorted(bounds[1:], zc, side='right')
+        mat_indices = np.clip(mat_indices, 0, n_layers - 1).astype(int)
     
     n0 = (ei) + (ej)*nx + (ek)*nx*ny
     n1 = (ei+1) + (ej)*nx + (ek)*nx*ny
