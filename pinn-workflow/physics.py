@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 
 import torch
 import torch.autograd as autograd
@@ -239,14 +241,37 @@ def compute_loss(model, data, device, weights=None):
     losses['pde'] = pde_loss
     total_loss += weights['pde'] * pde_loss
     
-    # Internal strain energy (volume integral, approximated by mean * volume)
-    energy_density = 0.5 * torch.einsum('bij,bij->b', eps, sig)
-    domain_volume = data.get("domain_volume", None)
-    if domain_volume is not None:
-        vol_t = torch.tensor(float(domain_volume), device=device, dtype=energy_density.dtype)
-        internal_energy = energy_density.mean() * vol_t
+    # Internal strain energy (volume integral, approximated by mean * volume).
+    # Prefer unbiased sampling if provided.
+    x_energy = data.get("interior_energy", None)
+    if x_energy is not None and x_energy.shape[0] > 0:
+        x_e = x_energy.to(device).detach().clone().requires_grad_(True)
+        E_local_e = _select_E_local(x_e)
+        t_local_e = _total_thickness(x_e)
+        lm_e = (E_local_e * nu) / ((1 + nu) * (1 - 2 * nu))
+        mu_e = E_local_e / (2 * (1 + nu))
+        lm_e = lm_e.unsqueeze(2)
+        mu_e = mu_e.unsqueeze(2)
+        v_e = model(x_e)
+        u_e = decode_u(v_e, x_e)
+        grad_u_e = gradient(u_e, x_e)
+        eps_e = strain(grad_u_e)
+        sig_e = stress(eps_e, lm_e, mu_e)
+        energy_density = 0.5 * torch.einsum("bij,bij->b", eps_e, sig_e)
+        domain_volume = data.get("domain_volume", None)
+        if domain_volume is not None:
+            vol_t = torch.tensor(float(domain_volume), device=device, dtype=energy_density.dtype)
+            internal_energy = energy_density.mean() * vol_t
+        else:
+            internal_energy = energy_density.mean() * (config.Lx * config.Ly * t_local_e.mean())
     else:
-        internal_energy = energy_density.mean() * (config.Lx * config.Ly * t_local.mean())
+        energy_density = 0.5 * torch.einsum('bij,bij->b', eps, sig)
+        domain_volume = data.get("domain_volume", None)
+        if domain_volume is not None:
+            vol_t = torch.tensor(float(domain_volume), device=device, dtype=energy_density.dtype)
+            internal_energy = energy_density.mean() * vol_t
+        else:
+            internal_energy = energy_density.mean() * (config.Lx * config.Ly * t_local.mean())
     
     # --- 2. Dirichlet BCs (Clamp) ---
     w_clamp = weights.get('clamp', weights.get('bc', 0.0))
@@ -351,13 +376,29 @@ def compute_loss(model, data, device, weights=None):
     patch_area = (config.LOAD_PATCH_X[1] - config.LOAD_PATCH_X[0]) * (
         config.LOAD_PATCH_Y[1] - config.LOAD_PATCH_Y[0]
     )
-    if n_top is None:
-        external_work = (-config.p0 * u_top[:, 2:3] * mask).mean() * patch_area
+    # External work: prefer uniformly-sampled top-load points if provided, to avoid bias from mask-focused sampling.
+    x_top_work = data.get("top_load_energy", None)
+    if x_top_work is not None and x_top_work.shape[0] > 0:
+        x_tw = x_top_work.to(device)
+        with torch.no_grad():
+            v_tw = model(x_tw)
+            u_tw = decode_u(v_tw, x_tw)
+        mask_tw = load_mask(x_tw).unsqueeze(1)
+        if n_top is None:
+            external_work = (-config.p0 * u_tw[:, 2:3] * mask_tw).mean() * patch_area
+        else:
+            load_area = float(data.get("top_load_area", patch_area))
+            load_area_t = torch.tensor(load_area, device=device, dtype=u_tw.dtype)
+            target_tw = -float(config.p0) * mask_tw * n_top[:1].to(device)  # approximate with global normal
+            external_work = (target_tw * u_tw).sum(dim=1, keepdim=True).mean() * load_area_t
     else:
-        # Approximate pressure work via Monte Carlo on the loaded surface samples.
-        load_area = float(data.get("top_load_area", patch_area))
-        load_area_t = torch.tensor(load_area, device=device, dtype=u_top.dtype)
-        external_work = (target * u_top).sum(dim=1, keepdim=True).mean() * load_area_t
+        if n_top is None:
+            external_work = (-config.p0 * u_top[:, 2:3] * mask).mean() * patch_area
+        else:
+            # Approximate pressure work via Monte Carlo on the loaded surface samples.
+            load_area = float(data.get("top_load_area", patch_area))
+            load_area_t = torch.tensor(load_area, device=device, dtype=u_top.dtype)
+            external_work = (target * u_top).sum(dim=1, keepdim=True).mean() * load_area_t
     energy_loss = internal_energy - external_work
     losses['energy'] = energy_loss
     total_loss += weights['energy'] * energy_loss

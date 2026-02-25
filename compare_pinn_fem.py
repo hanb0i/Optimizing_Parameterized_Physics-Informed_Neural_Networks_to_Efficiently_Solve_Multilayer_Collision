@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import argparse
 import os
 import sys
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -13,6 +17,7 @@ if PINN_WORKFLOW_DIR not in sys.path:
 
 import pinn_config as config
 import model
+import physics
 
 
 def _infer_arch_from_state_dict(sd: dict) -> tuple[int, int]:
@@ -62,6 +67,12 @@ def main():
         "--out_prefix",
         default="comparison_latest",
         help="Output prefix for images (e.g., comparison_latest)",
+    )
+    parser.add_argument(
+        "--hard_clamp_sides",
+        type=int,
+        default=None,
+        help="If set, overrides pinn_config.HARD_CLAMP_SIDES for evaluation (0/1).",
     )
 
     # Model architecture (optional; inferred if omitted)
@@ -124,6 +135,8 @@ def main():
 
     config.LAYERS = int(layers)
     config.NEURONS = int(neurons)
+    if args.hard_clamp_sides is not None:
+        config.HARD_CLAMP_SIDES = bool(int(args.hard_clamp_sides))
 
     pinn = model.MultiLayerPINN().to(device)
     pinn.load_state_dict(sd, strict=True)
@@ -140,35 +153,41 @@ def main():
 
     with torch.no_grad():
         pts_tensor = torch.tensor(pts12, dtype=torch.float32, device=device)
-        U_pinn_flat = pinn(pts_tensor).cpu().numpy()
-    v_pinn = U_pinn_flat.reshape(U_fea.shape)
-
-    # Decode displacement u from v using the same convention as physics: u = v / E_local.
-    z1 = float(args.t1)
-    z2 = float(args.t1 + args.t2)
-    E_local = np.where(
-        Z_fea < z1,
-        float(args.E1),
-        np.where(Z_fea < z2, float(args.E2), float(args.E3)),
-    ).astype(np.float32)
-    U_pinn = v_pinn / E_local[..., None]
+        v_flat = pinn(pts_tensor)
+        u_flat = physics.decode_u(v_flat, pts_tensor).cpu().numpy()
+    U_pinn = u_flat.reshape(U_fea.shape)
     print("Computed PINN predictions on FEM grid.")
 
     u_z_fea_top = U_fea[:, :, -1, 2]
     u_z_pinn_top = U_pinn[:, :, -1, 2]
     abs_diff = np.abs(u_z_fea_top - u_z_pinn_top)
 
-    mae = float(np.mean(abs_diff))
-    max_err = float(np.max(abs_diff))
-    denom = float(np.max(np.abs(u_z_fea_top)))
-    mae_pct = (mae / denom) * 100.0 if denom > 0 else 0.0
+    # --- Full-field metric (matches training/verify_fea_match style) ---
+    err_all = (U_pinn - U_fea).reshape(-1, 3)
+    mae_all = float(np.mean(np.abs(err_all)))
+    rmse_all = float(np.sqrt(np.mean(err_all**2)))
+    max_abs_all = float(np.max(np.abs(err_all)))
+    denom_all = float(np.max(np.abs(U_fea)))
+    mae_all_pct = (mae_all / denom_all) * 100.0 if denom_all > 0 else 0.0
+
+    # --- Top-surface u_z metric (for visualization parity with older plots) ---
+    mae_top = float(np.mean(abs_diff))
+    max_err_top = float(np.max(abs_diff))
+    denom_top = float(np.max(np.abs(u_z_fea_top)))
+    mae_top_pct = (mae_top / denom_top) * 100.0 if denom_top > 0 else 0.0
 
     print("\n==================================================")
-    print("Comparison Results (Top Surface u_z):")
+    print("Comparison Results (Full Field u):")
     print("==================================================")
-    print(f"MAE: {mae:.6f}")
-    print(f"MAE % of max |FEA u_z|: {mae_pct:.2f}%")
-    print(f"Max Error: {max_err:.6f}")
+    print(f"MAE: {mae_all:.6f}")
+    print(f"RMSE: {rmse_all:.6f}")
+    print(f"Max |Error|: {max_abs_all:.6f}")
+    print(f"MAE % of max |FEA u|: {mae_all_pct:.2f}%")
+    print("--------------------------------------------------")
+    print("Top Surface u_z (for reference):")
+    print(f"MAE: {mae_top:.6f}")
+    print(f"MAE % of max |FEA u_z|: {mae_top_pct:.2f}%")
+    print(f"Max Error: {max_err_top:.6f}")
     print(f"Peak Deflection FEA: {u_z_fea_top.min():.6f}")
     print(f"Peak Deflection PINN: {u_z_pinn_top.min():.6f}")
     print("==================================================")

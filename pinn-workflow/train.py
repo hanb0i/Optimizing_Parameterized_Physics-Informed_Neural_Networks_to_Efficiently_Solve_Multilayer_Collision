@@ -357,12 +357,16 @@ def train():
         pts_fea = np.hstack([pts_fea, e1_ones, t1_ones, e2_ones, t2_ones, e3_ones, t3_ones, r_ones, mu_ones, v0_ones])
         pts_fea_tensor = torch.tensor(pts_fea, dtype=torch.float32).to(device)
         u_fea_flat = U_fea.reshape(-1, 3)
+        u_fea_top_uz = U_fea[:, :, -1, 2].astype(np.float32, copy=False)
+        top_uz_denom = float(np.max(np.abs(u_fea_top_uz)))
         
         fem_available = True
         print(f"FEM data loaded: {X_fea.shape} (path={fea_path!r})")
     except FileNotFoundError:
         print("FEM solution not found. Training without FEM comparison.")
         fem_available = False
+        u_fea_top_uz = None
+        top_uz_denom = 0.0
     
     # Data Container
     training_data = data.get_data()
@@ -425,6 +429,8 @@ def train():
     best_fem_epoch = None
     best_fem_patch_mae = float("inf")
     best_fem_patch_epoch = None
+    best_top_uz_mae_pct = float("inf")
+    best_top_uz_epoch = None
     
     for epoch in range(epochs_adam):
         optimizer_adam.zero_grad()
@@ -498,6 +504,15 @@ def train():
                     mae = np.mean(diff)
                     max_err = np.max(diff)
 
+                    # Top surface u_z metric (MAE as % of max |FEA u_z| on the top surface).
+                    if u_fea_top_uz is not None and top_uz_denom > 0.0:
+                        u_pred_grid = u_pinn_flat.reshape(U_fea.shape)
+                        top_abs = np.abs(u_pred_grid[:, :, -1, 2] - u_fea_top_uz)
+                        top_uz_mae = float(np.mean(top_abs))
+                        top_uz_mae_pct = (top_uz_mae / float(top_uz_denom)) * 100.0
+                    else:
+                        top_uz_mae_pct = float("nan")
+
                     # Patch-focused metric (top surface + load patch).
                     z = pts_fea[:, 2]
                     H_fea = float(getattr(config, "H", np.max(z)))
@@ -529,6 +544,15 @@ def train():
                         best_patch_path = _tag_path("pinn_model_best_fem_patch.pth")
                         torch.save(pinn.state_dict(), best_patch_path)
                         print(f"  New best FEM PATCH MAE: {best_fem_patch_mae:.6f} at epoch {best_fem_patch_epoch} (saved {best_patch_path})")
+
+                    if np.isfinite(top_uz_mae_pct) and top_uz_mae_pct < best_top_uz_mae_pct:
+                        best_top_uz_mae_pct = float(top_uz_mae_pct)
+                        best_top_uz_epoch = int(epoch)
+                        best_top_path = _tag_path("pinn_model_best_top_uz.pth")
+                        torch.save(pinn.state_dict(), best_top_path)
+                        print(
+                            f"  New best TOP u_z MAE%: {best_top_uz_mae_pct:.2f}% at epoch {best_top_uz_epoch} (saved {best_top_path})"
+                        )
                     
                 print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
                       f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
@@ -540,7 +564,7 @@ def train():
                       f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6f} | "
                       f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6f} | "
                       f"LR: {current_lr:.2e} | "
-                      f"FEM MAE: {mae:.6f} | FEM PATCH MAE: {patch_mae:.6f} | Time: {step_duration:.4f}s")
+                      f"FEM MAE: {mae:.6f} | FEM PATCH MAE: {patch_mae:.6f} | TOP u_z MAE%: {top_uz_mae_pct:.2f}% | Time: {step_duration:.4f}s")
             else:
                 print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
                       f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
@@ -613,6 +637,14 @@ def train():
                 mae = np.mean(diff)
                 max_err = np.max(diff)
 
+                if u_fea_top_uz is not None and top_uz_denom > 0.0:
+                    u_pred_grid = u_pinn_flat.reshape(U_fea.shape)
+                    top_abs = np.abs(u_pred_grid[:, :, -1, 2] - u_fea_top_uz)
+                    top_uz_mae = float(np.mean(top_abs))
+                    top_uz_mae_pct = (top_uz_mae / float(top_uz_denom)) * 100.0
+                else:
+                    top_uz_mae_pct = float("nan")
+
                 z = pts_fea[:, 2]
                 H_fea = float(getattr(config, "H", np.max(z)))
                 top = np.isclose(z, H_fea)
@@ -641,6 +673,12 @@ def train():
                     best_patch_path = _tag_path("pinn_model_best_fem_patch.pth")
                     torch.save(pinn.state_dict(), best_patch_path)
                     print(f"  New best FEM PATCH MAE: {best_fem_patch_mae:.6e} at {best_fem_patch_epoch} (saved {best_patch_path})")
+                if np.isfinite(top_uz_mae_pct) and top_uz_mae_pct < best_top_uz_mae_pct:
+                    best_top_uz_mae_pct = float(top_uz_mae_pct)
+                    best_top_uz_epoch = f"lbfgs_step_{i}"
+                    best_top_path = _tag_path("pinn_model_best_top_uz.pth")
+                    torch.save(pinn.state_dict(), best_top_path)
+                    print(f"  New best TOP u_z MAE%: {best_top_uz_mae_pct:.2f}% at {best_top_uz_epoch} (saved {best_top_path})")
             print(f"L-BFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_side: {losses.get('free_side', torch.tensor(0.0)).item():.6e} | Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
@@ -650,7 +688,7 @@ def train():
                   f"FricC: {losses.get('friction_coulomb', torch.tensor(0.0)).item():.6e} | "
                   f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6e} | "
                   f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6e} | "
-                  f"FEM MAE: {mae:.6e} | FEM PATCH MAE: {patch_mae:.6e} | Time: {step_end - step_start:.4f}s")
+                  f"FEM MAE: {mae:.6e} | FEM PATCH MAE: {patch_mae:.6e} | TOP u_z MAE%: {top_uz_mae_pct:.2f}% | Time: {step_end - step_start:.4f}s")
         else:
             print(f"L-BFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "

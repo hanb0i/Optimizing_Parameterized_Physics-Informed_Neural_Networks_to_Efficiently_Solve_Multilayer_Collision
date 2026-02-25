@@ -1,4 +1,6 @@
 
+from __future__ import annotations
+
 import torch
 import numpy as np
 import os
@@ -883,6 +885,34 @@ def get_data(prev_data=None, residuals=None):
 
     interior = torch.cat(parts, dim=0) if len(parts) > 1 else parts[0]
 
+    # Extra uniformly-sampled points for unbiased energy/work integration.
+    # These are independent of residual-based resampling and patch-bias, by design.
+    if bool(getattr(config, "ENERGY_UNBIASED_SAMPLES", False)):
+        n_int_e = int(getattr(config, "N_INTERIOR_ENERGY", 0))
+        if n_int_e > 0:
+            params_e = _sample_layer_params(n_int_e)
+            T_e = _total_thickness_from_params(params_e)
+            xe = _uniform(n_int_e, 0.0, float(config.Lx))
+            ye = _uniform(n_int_e, 0.0, float(config.Ly))
+            ze = torch.rand(n_int_e, 1) * T_e
+            interior_energy = _assemble_input(torch.cat([xe, ye, ze], dim=1), params_e)
+        else:
+            interior_energy = interior[:0]
+
+        n_top_e = int(getattr(config, "N_TOP_LOAD_ENERGY", 0))
+        if n_top_e > 0:
+            params_te = _sample_layer_params(n_top_e)
+            T_te = _total_thickness_from_params(params_te)
+            xte = _uniform(n_top_e, float(config.LOAD_PATCH_X[0]), float(config.LOAD_PATCH_X[1]))
+            yte = _uniform(n_top_e, float(config.LOAD_PATCH_Y[0]), float(config.LOAD_PATCH_Y[1]))
+            zte = T_te
+            top_load_energy = _assemble_input(torch.cat([xte, yte, zte], dim=1), params_te)
+        else:
+            top_load_energy = top_load[:0]
+    else:
+        interior_energy = None
+        top_load_energy = None
+
     # Bottom plane samples (traction-free in box mode; Dirichlet handled on side faces to match FEA).
     n_bot = int(config.N_BOTTOM)
     if prev_data is not None and residuals is not None and "bottom" in residuals:
@@ -1064,6 +1094,10 @@ def get_data(prev_data=None, residuals=None):
         "side_free_normal": side_free_normal.to(dtype=torch.float32),
         "interfaces": [intf1, intf2],
     }
+    if interior_energy is not None:
+        out["interior_energy"] = interior_energy
+    if top_load_energy is not None:
+        out["top_load_energy"] = top_load_energy
     if interfaces_band is not None:
         out["interfaces_band"] = interfaces_band
     if sides is not None:

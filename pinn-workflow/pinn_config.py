@@ -239,6 +239,14 @@ UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
 #Resampling/perturbation control
 SAMPLING_NOISE_SCALE = 0.08  # Larger perturbations widen coverage while still sampling residual-rich zones.
 
+# --- Energy/work integration (unbiased sampling) ---
+# When True, compute the energy loss using additional uniformly-sampled points, instead of reusing
+# the (often biased) PDE/boundary collocation points. This improves magnitude accuracy when interior
+# sampling is concentrated under the patch or top-load sampling is mask-biased.
+ENERGY_UNBIASED_SAMPLES = True
+N_INTERIOR_ENERGY = 8000
+N_TOP_LOAD_ENERGY = 4000
+
 # Auxiliary load-patch average displacement penalty
 LOAD_PATCH_UZ_TARGET = -0.05  # Encourage the mean vertical deflection on the load patch
 LOAD_PATCH_UZ_WEIGHT = 0.02   # Keep the auxiliary penalty small so shape stays intact
