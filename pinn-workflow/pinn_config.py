@@ -113,7 +113,7 @@ THICKNESS_COMPLIANCE_ALPHA = 1.234
 # How to interpret the network output when forming displacement u:
 # - "local": u = v / E_local (legacy scaling; can cancel stiffness in layered E)
 # - "none":  u = v (recommended for layered FEM parity)
-DISPLACEMENT_DECODE_MODE = "none"
+DISPLACEMENT_DECODE_MODE = "local"
 
 # When True, use a mixed (first-order) formulation that predicts both displacement and stress:
 # output = [u_x,u_y,u_z, s_xx,s_yy,s_zz,s_xy,s_xz,s_yz]
@@ -195,7 +195,7 @@ TOP_FREE_RING_WIDTH_FRAC = 0.08  # fraction of patch size (max of dx,dy)
 # that the interior PDE cannot smooth out (because the routing is non-differentiable).
 # Use a smooth sigmoid blend across interfaces so the composite field is differentiable in z.
 LAYER_GATING = "soft"  # "soft" or "hard"
-LAYER_GATE_BETA = 200.0  # larger => sharper transitions around interfaces
+LAYER_GATE_BETA = 50.0  # larger => sharper transitions around interfaces
 
 # Optional schedule: after PATCH_FOCUS_EPOCH, increase mask-based sampling/loss focus.
 # This helps match the local indentation profile without permanently harming global fit.
@@ -220,7 +220,7 @@ EPOCHS_LBFGS = 80
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
-    'pde': 6.0,    # Equilibrium (div sigma); strong-form in displacement-only mode
+    'pde': 1.0,    # Equilibrium (div sigma); strong-form in displacement-only mode
     'constitutive': 1.0,  # Mixed-form only: enforce sigma = C:epsilon(u)
     'bc': 0.7,      # Slightly softer sides so load can gather more budget
     # Optional split of boundary weights:
@@ -229,7 +229,7 @@ WEIGHTS = {
     # If omitted, both fall back to 'bc'.
     # 'clamp': 0.7,
     # 'free': 0.7,
-    'load': 10.0, # Stage3g: higher load emphasis
+    'load': 20.0, # Stage3g: higher load emphasis
     'energy': 1.0, # Stage3g: potential energy objective weight
     'impact_invariance': 0.0,  # Set >0 only for neutral-parameter mode
     'impact_contact': 0.0002,   # Reduced to preserve FEA parity in no-supervision mode
