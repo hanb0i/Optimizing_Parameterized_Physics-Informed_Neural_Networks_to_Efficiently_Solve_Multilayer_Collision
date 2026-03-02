@@ -10,12 +10,16 @@ class LayerNet(nn.Module):
     def __init__(self, hidden_layers=4, hidden_units=64, activation=nn.Tanh()):
         super().__init__()
         layers = []
-        # Feature layout:
+        n_layers = int(getattr(config, "NUM_LAYERS", 2))
+        if n_layers < 1:
+            raise ValueError(f"config.NUM_LAYERS must be >= 1, got {n_layers}")
+
+        # Feature layout (for NUM_LAYERS = L):
         #   [x, y, z_hat,
-        #    E1_norm, t1_scaled, E2_norm, t2_scaled, E3_norm, t3_scaled,
+        #    E1_norm, t1_scaled, ..., EL_norm, tL_scaled,
         #    r_norm, mu_norm, v0_norm,
         #    inv1, inv2, inv3]
-        current_dim = 15
+        current_dim = 3 + 2 * n_layers + 3 + 3
         
         layers.append(nn.Linear(current_dim, hidden_units))
         layers.append(activation)
@@ -37,38 +41,37 @@ class LayerNet(nn.Module):
                 
     def forward(self, x):
         # Input layout:
-        #   [x, y, z, E1, t1, E2, t2, E3, t3, r, mu, v0]
+        #   [x, y, z, E1, t1, ..., EL, tL, r, mu, v0]
+        n_layers = int(getattr(config, "NUM_LAYERS", 2))
         x_coord = x[:, 0:1]
         y_coord = x[:, 1:2]
         z_coord = x[:, 2:3]
-        e1 = x[:, 3:4]
-        t1 = x[:, 4:5]
-        e2 = x[:, 5:6]
-        t2 = x[:, 6:7]
-        e3 = x[:, 7:8]
-        t3 = x[:, 8:9]
-        r_param = x[:, 9:10]
-        mu_param = x[:, 10:11]
-        v0_param = x[:, 11:12]
 
-        t1 = torch.clamp(t1, min=1e-4)
-        t2 = torch.clamp(t2, min=1e-4)
-        t3 = torch.clamp(t3, min=1e-4)
-        t_total = torch.clamp(t1 + t2 + t3, min=1e-4)
+        # Layer parameters start at column 3: (E1,t1,...,EL,tL)
+        base = 3
+        e_cols = [base + 2 * i for i in range(n_layers)]
+        t_cols = [base + 2 * i + 1 for i in range(n_layers)]
+
+        Es = [x[:, c : c + 1] for c in e_cols]
+        Ts = [torch.clamp(x[:, c : c + 1], min=1e-4) for c in t_cols]
+        t_total = torch.clamp(sum(Ts), min=1e-4)
+
+        r_col = base + 2 * n_layers
+        mu_col = r_col + 1
+        v0_col = r_col + 2
+        r_param = x[:, r_col : r_col + 1]
+        mu_param = x[:, mu_col : mu_col + 1]
+        v0_param = x[:, v0_col : v0_col + 1]
         
         e_min, e_max = config.E_RANGE
         e_span = float(e_max - e_min) if float(e_max - e_min) != 0.0 else 1.0
-        e1_norm = (e1 - float(e_min)) / e_span
-        e2_norm = (e2 - float(e_min)) / e_span
-        e3_norm = (e3 - float(e_min)) / e_span
+        E_norm = [(e - float(e_min)) / e_span for e in Es]
 
         # Thicknesses are layer-wise and can be smaller than the total thickness lower bound;
         # scale by the total-thickness upper bound for a stable [0,~1] range.
         _, t_max = config.THICKNESS_RANGE
         t_scale = float(t_max) if float(t_max) > 0.0 else 1.0
-        t1_scaled = t1 / t_scale
-        t2_scaled = t2 / t_scale
-        t3_scaled = t3 / t_scale
+        T_scaled = [t / t_scale for t in Ts]
 
         r_min, r_max = config.RESTITUTION_RANGE
         r_span = float(r_max - r_min) if float(r_max - r_min) != 0.0 else 1.0
@@ -91,24 +94,11 @@ class LayerNet(nn.Module):
         feat_inv3 = ratio ** 3
         extra_feats = torch.cat([feat_inv1, feat_inv2, feat_inv3], dim=1)
         
-        x_scaled = torch.cat(
-            [
-                x_coord,
-                y_coord,
-                z_hat,
-                e1_norm,
-                t1_scaled,
-                e2_norm,
-                t2_scaled,
-                e3_norm,
-                t3_scaled,
-                r_norm,
-                mu_norm,
-                v0_norm,
-                extra_feats,
-            ],
-            dim=1,
-        )
+        feats = [x_coord, y_coord, z_hat]
+        for e_n, t_s in zip(E_norm, T_scaled):
+            feats.extend([e_n, t_s])
+        feats.extend([r_norm, mu_norm, v0_norm, extra_feats])
+        x_scaled = torch.cat(feats, dim=1)
         y_raw = self.net(x_scaled)
 
         # impact_params-style hard clamp-by-construction (box mode only):
@@ -138,32 +128,33 @@ class LayerNet(nn.Module):
 class MultiLayerPINN(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layers = nn.ModuleList(
-            [
-                LayerNet(hidden_layers=config.LAYERS, hidden_units=config.NEURONS),
-                LayerNet(hidden_layers=config.LAYERS, hidden_units=config.NEURONS),
-                LayerNet(hidden_layers=config.LAYERS, hidden_units=config.NEURONS),
-            ]
-        )
+        n_layers = int(getattr(config, "NUM_LAYERS", 2))
+        self.layers = nn.ModuleList([LayerNet(hidden_layers=config.LAYERS, hidden_units=config.NEURONS) for _ in range(n_layers)])
 
     @staticmethod
-    def _interfaces(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        t1 = torch.clamp(x[:, 4:5], min=1e-4)
-        t2 = torch.clamp(x[:, 6:7], min=1e-4)
-        z1 = t1
-        z2 = t1 + t2
-        return z1, z2
+    def _interfaces(x: torch.Tensor) -> list[torch.Tensor]:
+        n_layers = int(getattr(config, "NUM_LAYERS", 2))
+        if n_layers <= 1:
+            return []
+        base = 3
+        t_cols = [base + 2 * i + 1 for i in range(n_layers)]
+        Ts = [torch.clamp(x[:, c : c + 1], min=1e-4) for c in t_cols]
+        cum = torch.cumsum(torch.cat(Ts, dim=1), dim=1)
+        # interfaces are at cumulative thicknesses excluding the top surface
+        return [cum[:, i : i + 1] for i in range(n_layers - 1)]
 
     @classmethod
     def _layer_idx(cls, x: torch.Tensor) -> torch.Tensor:
+        n_layers = int(getattr(config, "NUM_LAYERS", 2))
+        if n_layers <= 1:
+            return torch.zeros((x.shape[0],), device=x.device, dtype=torch.long)
         z = x[:, 2:3]
-        z1, z2 = cls._interfaces(x)
-        idx0 = z < z1
-        idx1 = (z >= z1) & (z < z2)
-        # default to layer 2
-        out = torch.full((x.shape[0],), 2, device=x.device, dtype=torch.long)
-        out[idx0[:, 0]] = 0
-        out[idx1[:, 0]] = 1
+        interfaces = cls._interfaces(x)
+        # Start as last layer, then overwrite earlier ones.
+        out = torch.full((x.shape[0],), n_layers - 1, device=x.device, dtype=torch.long)
+        for li, z_intf in enumerate(interfaces):
+            m = z < z_intf
+            out[m[:, 0]] = li
         return out
         
     def forward(self, x: torch.Tensor, layer_idx: int | None = None) -> torch.Tensor:
@@ -175,30 +166,38 @@ class MultiLayerPINN(nn.Module):
             idx = self._layer_idx(x)
             out_dim = 9 if bool(getattr(config, "USE_MIXED_FORMULATION", False)) else 3
             out = torch.empty((x.shape[0], out_dim), device=x.device, dtype=x.dtype)
-            for li in (0, 1, 2):
+            for li in range(len(self.layers)):
                 m = idx == li
                 if torch.any(m):
                     out[m] = self.layers[li](x[m])
             return out
 
-        # Soft gating: differentiable blend across interfaces.
-        # w0 = 1 - s1, w1 = s1*(1-s2), w2 = s2, where s1/s2 are sigmoids around z1/z2.
+        # Soft gating: differentiable stick-breaking blend across interfaces.
+        # For L layers and interfaces s_k = sigmoid(beta*(z - z_k)):
+        #   w0 = 1 - s0
+        #   wi = s_{i-1} * (1 - s_i) for i=1..L-2
+        #   w_{L-1} = s_{L-2}
+        n_layers = len(self.layers)
+        if n_layers <= 1:
+            return self.layers[0](x)
         z = x[:, 2:3]
-        z1, z2 = self._interfaces(x)
+        interfaces = self._interfaces(x)
         beta = float(getattr(config, "LAYER_GATE_BETA", 200.0))
-        s1 = torch.sigmoid(beta * (z - z1))
-        s2 = torch.sigmoid(beta * (z - z2))
-        w0 = 1.0 - s1
-        w1 = s1 * (1.0 - s2)
-        w2 = s2
-        # Normalize for safety.
-        ws = (w0 + w1 + w2).clamp_min(1e-8)
-        w0, w1, w2 = w0 / ws, w1 / ws, w2 / ws
+        s = [torch.sigmoid(beta * (z - zi)) for zi in interfaces]  # length L-1
 
-        y0 = self.layers[0](x)
-        y1 = self.layers[1](x)
-        y2 = self.layers[2](x)
-        return w0 * y0 + w1 * y1 + w2 * y2
+        w = []
+        w.append(1.0 - s[0])
+        for i in range(1, n_layers - 1):
+            w.append(s[i - 1] * (1.0 - s[i]))
+        w.append(s[-1])
+        ws = torch.stack(w, dim=0).sum(dim=0).clamp_min(1e-8)
+        w = [wi / ws for wi in w]
+
+        ys = [layer(x) for layer in self.layers]
+        out = w[0] * ys[0]
+        for wi, yi in zip(w[1:], ys[1:]):
+            out = out + wi * yi
+        return out
 
     def predict_all(self, x):
         return self.forward(x)

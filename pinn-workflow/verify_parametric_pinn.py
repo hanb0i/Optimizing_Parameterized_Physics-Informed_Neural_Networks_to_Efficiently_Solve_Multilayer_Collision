@@ -18,6 +18,7 @@ if FEA_SOLVER_DIR not in sys.path:
 import pinn_config as config
 import model
 import fem_solver
+import physics
 
 
 def _load_model(model_path, device):
@@ -31,7 +32,7 @@ def _load_model(model_path, device):
             for k, v in sd.items():
                 if k.startswith("layer."):
                     suffix = k[len("layer.") :]
-                    for li in range(3):
+                    for li in range(int(getattr(config, "NUM_LAYERS", 2))):
                         replicated[f"layers.{li}.{suffix}"] = v
                 else:
                     replicated[k] = v
@@ -47,13 +48,6 @@ def _load_model(model_path, device):
         print(f"Warning: {model_path} not found.")
     pinn.eval()
     return pinn
-
-
-def _u_from_v(v, E_val, thickness):
-    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
-    t_scale = 1.0 if alpha == 0.0 else (float(config.H) / max(1e-8, float(thickness))) ** alpha
-    e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
-    return (v / (float(E_val) ** e_pow)) * t_scale
 
 
 def _ref_params():
@@ -82,19 +76,23 @@ def run_fea(E_val, thickness):
 def _pinn_predict_top(pinn, device, X_flat, Y_flat, thickness, E_val):
     r_ref, mu_ref, v0_ref = _ref_params()
     Z_flat = np.ones_like(X_flat) * thickness
-    E1_flat = np.ones_like(X_flat) * E_val
-    E2_flat = np.ones_like(X_flat) * E_val
-    E3_flat = np.ones_like(X_flat) * E_val
-    t1_flat = np.ones_like(X_flat) * (thickness / 3.0)
-    t2_flat = np.ones_like(X_flat) * (thickness / 3.0)
-    t3_flat = np.ones_like(X_flat) * (thickness / 3.0)
+    L = int(getattr(config, "NUM_LAYERS", 2))
+    t_list = [float(thickness) / float(L)] * L
+    E_list = [float(E_val)] * L
     R_flat = np.ones_like(X_flat) * r_ref
     MU_flat = np.ones_like(X_flat) * mu_ref
     V0_flat = np.ones_like(X_flat) * v0_ref
-    pts = np.stack([X_flat, Y_flat, Z_flat, E1_flat, t1_flat, E2_flat, t2_flat, E3_flat, t3_flat, R_flat, MU_flat, V0_flat], axis=1)
+    cols = [X_flat, Y_flat, Z_flat]
+    for Ei, ti in zip(E_list, t_list):
+        cols.append(np.ones_like(X_flat) * Ei)
+        cols.append(np.ones_like(X_flat) * ti)
+    cols.extend([R_flat, MU_flat, V0_flat])
+    pts = np.stack(cols, axis=1).astype(np.float32, copy=False)
     with torch.no_grad():
-        v = pinn(torch.tensor(pts, dtype=torch.float32).to(device)).cpu().numpy()
-    return _u_from_v(v, E_val, thickness)
+        x_t = torch.tensor(pts, dtype=torch.float32).to(device)
+        v = pinn(x_t)
+        u = physics.decode_u(v, x_t).cpu().numpy()
+    return u
 
 
 def verify_parametric(pinn, device, viz_dir):
@@ -189,18 +187,23 @@ def verify_parametric(pinn, device, viz_dir):
             x_in = X_c.flatten()
             y_in = np.ones_like(x_in) * 0.5
             z_in = Z_c.flatten()
-            E_in = np.ones_like(x_in) * E_val
-            t1_in = np.ones_like(x_in) * (t_val / 3.0)
-            t2_in = np.ones_like(x_in) * (t_val / 3.0)
-            t3_in = np.ones_like(x_in) * (t_val / 3.0)
+            L = int(getattr(config, "NUM_LAYERS", 2))
+            t_list = [float(t_val) / float(L)] * L
+            E_list = [float(E_val)] * L
             R_in = np.ones_like(x_in) * r_ref
             MU_in = np.ones_like(x_in) * mu_ref
             V0_in = np.ones_like(x_in) * v0_ref
-            pts_c = np.stack([x_in, y_in, z_in, E_in, t1_in, E_in, t2_in, E_in, t3_in, R_in, MU_in, V0_in], axis=1)
+            cols = [x_in, y_in, z_in]
+            for Ei, ti in zip(E_list, t_list):
+                cols.append(np.ones_like(x_in) * Ei)
+                cols.append(np.ones_like(x_in) * ti)
+            cols.extend([R_in, MU_in, V0_in])
+            pts_c = np.stack(cols, axis=1).astype(np.float32, copy=False)
 
             with torch.no_grad():
-                v_c = pinn(torch.tensor(pts_c, dtype=torch.float32).to(device)).cpu().numpy()
-            u_c = _u_from_v(v_c, E_val, t_val)
+                x_t = torch.tensor(pts_c, dtype=torch.float32).to(device)
+                v_c = pinn(x_t)
+                u_c = physics.decode_u(v_c, x_t).cpu().numpy()
             UZ_pinn_c = u_c[:, 2].reshape(nz_c, nx)
 
             # FEA cross-section: interpolate from 3D FEA data

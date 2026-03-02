@@ -20,6 +20,7 @@ def main() -> None:
     ap.add_argument("--Ly", type=float, default=1.0)
     ap.add_argument("--H", type=float, default=0.1)
 
+    ap.add_argument("--num_layers", type=int, default=2, help="Number of layers (2 or 3 supported by this script).")
     ap.add_argument("--E1", type=float, default=1.0)
     ap.add_argument("--E2", type=float, default=1.0)
     ap.add_argument("--E3", type=float, default=1.0)
@@ -41,19 +42,26 @@ def main() -> None:
     args = ap.parse_args()
 
     H = float(args.H)
-    if args.t1 is None or args.t2 is None or args.t3 is None:
-        t1 = t2 = t3 = H / 3.0
+    L = int(args.num_layers)
+    if L not in (2, 3):
+        raise ValueError(f"--num_layers must be 2 or 3, got {L}")
+
+    E_vals = [float(args.E1), float(args.E2), float(args.E3)][:L]
+    t_in = [args.t1, args.t2, args.t3][:L]
+    if any(v is None for v in t_in):
+        t_vals = [H / float(L)] * L
     else:
-        t1, t2, t3 = float(args.t1), float(args.t2), float(args.t3)
+        t_vals = [float(v) for v in t_in]
+    # Normalize to match H exactly.
+    tsum = sum(t_vals)
+    if tsum <= 0:
+        raise ValueError("Sum of thicknesses must be > 0.")
+    t_vals = [tv * (H / tsum) for tv in t_vals]
 
     cfg = {
         "geometry": {"Lx": float(args.Lx), "Ly": float(args.Ly), "H": H},
         "mesh": {"ne_x": int(args.ne_x), "ne_y": int(args.ne_y), "ne_z": int(args.ne_z)},
-        "layers": [
-            {"t": t1, "E": float(args.E1), "nu": float(args.nu)},
-            {"t": t2, "E": float(args.E2), "nu": float(args.nu)},
-            {"t": t3, "E": float(args.E3), "nu": float(args.nu)},
-        ],
+        "layers": [{"t": float(ti), "E": float(Ei), "nu": float(args.nu)} for Ei, ti in zip(E_vals, t_vals)],
         "load_patch": {
             "pressure": float(args.p0),
             "x_start": float(args.x0),
@@ -75,11 +83,7 @@ def main() -> None:
             "Lx": float(args.Lx),
             "Ly": float(args.Ly),
             "H": H,
-            "layers": [
-                {"t": float(t1), "E": float(args.E1), "nu": float(args.nu)},
-                {"t": float(t2), "E": float(args.E2), "nu": float(args.nu)},
-                {"t": float(t3), "E": float(args.E3), "nu": float(args.nu)},
-            ],
+            "layers": [{"t": float(ti), "E": float(Ei), "nu": float(args.nu)} for Ei, ti in zip(E_vals, t_vals)],
             "mesh": {"ne_x": int(args.ne_x), "ne_y": int(args.ne_y), "ne_z": int(args.ne_z)},
             "load_patch": cfg["load_patch"],
             "use_soft_mask": bool(int(args.use_soft_mask)),
@@ -91,4 +95,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

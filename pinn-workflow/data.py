@@ -13,16 +13,29 @@ from tessellated_geometry import (
     sample_interior as tess_sample_interior,
 )
 
-# -----------------------
-# 3-layer laminate inputs
-# -----------------------
+# -------------------------------
+# Layered laminate PiNN inputs
+# -------------------------------
 #
-# Input layout used across the PiNN:
-#   [x, y, z, E1, t1, E2, t2, E3, t3, restitution, friction, impact_velocity]
+# Input layout (for NUM_LAYERS = L):
+#   [x, y, z, E1, t1, ..., EL, tL, restitution, friction, impact_velocity]
 #
-# Total thickness is T = t1+t2+t3, and interfaces are at z=t1 and z=t1+t2.
+# Total thickness is T = sum(t_i), and interfaces are at cumulative thicknesses:
+#   z = t1, z = t1+t2, ..., z = t1+...+t_{L-1}.
 
-_DIN = 12
+def _num_layers() -> int:
+    n = int(getattr(config, "NUM_LAYERS", 2))
+    if n < 1:
+        raise ValueError(f"config.NUM_LAYERS must be >= 1, got {n}")
+    return n
+
+def _param_dim() -> int:
+    return 2 * _num_layers() + 3
+
+def _din() -> int:
+    return 3 + _param_dim()
+
+_DIN = _din()
 
 
 def _uniform(n: int, lo: float, hi: float, *, device=None) -> torch.Tensor:
@@ -131,52 +144,44 @@ def _sample_xy_top_free_ring(n: int, *, device=None) -> tuple[torch.Tensor, torc
 
 def _sample_layer_params(n: int, *, total_thickness: float | None = None, device=None) -> torch.Tensor:
     """
-    Returns params tensor shaped (n,9):
-      [E1,t1,E2,t2,E3,t3,r,mu,v0]
+    Returns params tensor shaped (n, 2*L+3):
+      [E1,t1,...,EL,tL,r,mu,v0]
     """
+    L = _num_layers()
     if bool(getattr(config, "TRAIN_FIXED_PARAMS", False)):
         E = float(getattr(config, "TRAIN_FIXED_E", 1.0))
         T = float(getattr(config, "TRAIN_FIXED_TOTAL_THICKNESS", getattr(config, "H", 0.1)))
+        if total_thickness is not None:
+            T = float(total_thickness)
 
-        E1_cfg = getattr(config, "TRAIN_FIXED_E1", None)
-        E2_cfg = getattr(config, "TRAIN_FIXED_E2", None)
-        E3_cfg = getattr(config, "TRAIN_FIXED_E3", None)
-        t1_cfg = getattr(config, "TRAIN_FIXED_T1", None)
-        t2_cfg = getattr(config, "TRAIN_FIXED_T2", None)
-        t3_cfg = getattr(config, "TRAIN_FIXED_T3", None)
+        # Per-layer E_i / t_i (fallbacks: TRAIN_FIXED_E and equal thickness splits).
+        E_vals = []
+        for i in range(L):
+            e_cfg = getattr(config, f"TRAIN_FIXED_E{i+1}", None)
+            E_vals.append(float(E if e_cfg is None else e_cfg))
 
-        if E1_cfg is None and E2_cfg is None and E3_cfg is None:
-            E1_val = E2_val = E3_val = E
+        t_cfgs = [getattr(config, f"TRAIN_FIXED_T{i+1}", None) for i in range(L)]
+        if all(v is None for v in t_cfgs):
+            t_vals = [float(T) / float(L)] * L
         else:
-            E1_val = float(E if E1_cfg is None else E1_cfg)
-            E2_val = float(E if E2_cfg is None else E2_cfg)
-            E3_val = float(E if E3_cfg is None else E3_cfg)
-
-        if t1_cfg is None and t2_cfg is None and t3_cfg is None:
-            t1_val = t2_val = t3_val = T / 3.0
-        else:
-            t1_val = float(T / 3.0 if t1_cfg is None else t1_cfg)
-            t2_val = float(T / 3.0 if t2_cfg is None else t2_cfg)
-            t3_val = float(T / 3.0 if t3_cfg is None else t3_cfg)
-            tsum = max(1e-8, t1_val + t2_val + t3_val)
+            t_vals = [float((T / L) if v is None else v) for v in t_cfgs]
+            tsum = max(1e-8, float(sum(t_vals)))
             scale = float(T) / tsum
-            t1_val *= scale
-            t2_val *= scale
-            t3_val *= scale
+            t_vals = [tv * scale for tv in t_vals]
 
-        t1 = torch.full((n, 1), t1_val, dtype=torch.float32, device=device).clamp_min(1e-4)
-        t2 = torch.full((n, 1), t2_val, dtype=torch.float32, device=device).clamp_min(1e-4)
-        t3 = torch.full((n, 1), t3_val, dtype=torch.float32, device=device).clamp_min(1e-4)
-        E1 = torch.full((n, 1), E1_val, dtype=torch.float32, device=device)
-        E2 = torch.full((n, 1), E2_val, dtype=torch.float32, device=device)
-        E3 = torch.full((n, 1), E3_val, dtype=torch.float32, device=device)
+        t_tensors = [torch.full((n, 1), tv, dtype=torch.float32, device=device).clamp_min(1e-4) for tv in t_vals]
+        e_tensors = [torch.full((n, 1), ev, dtype=torch.float32, device=device) for ev in E_vals]
         r_ref = float(getattr(config, "RESTITUTION_REF", 0.5))
         mu_ref = float(getattr(config, "FRICTION_REF", 0.3))
         v0_ref = float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
         r = torch.full((n, 1), r_ref, dtype=torch.float32, device=device)
         mu = torch.full((n, 1), mu_ref, dtype=torch.float32, device=device)
         v0 = torch.full((n, 1), v0_ref, dtype=torch.float32, device=device)
-        return torch.cat([E1, t1, E2, t2, E3, t3, r, mu, v0], dim=1)
+        parts = []
+        for e_i, t_i in zip(e_tensors, t_tensors):
+            parts.extend([e_i, t_i])
+        parts.extend([r, mu, v0])
+        return torch.cat(parts, dim=1)
 
     e_min, e_max = _get_e_range()
     r_min, r_max = _get_restitution_range()
@@ -191,37 +196,33 @@ def _sample_layer_params(n: int, *, total_thickness: float | None = None, device
         T = torch.full((n, 1), float(total_thickness), dtype=torch.float32, device=device)
 
     frac_min = float(getattr(config, "LAYER_THICKNESS_FRACTION_MIN", 0.05))
-    frac_min = max(0.0, min(frac_min, 1.0 / 3.0 - 1e-6))
-    raw = torch.rand(n, 3, device=device)
+    frac_min = max(0.0, min(frac_min, 1.0 / float(L) - 1e-6))
+    raw = torch.rand(n, L, device=device)
     raw = raw / raw.sum(dim=1, keepdim=True).clamp_min(1e-12)
-    frac = frac_min + (1.0 - 3.0 * frac_min) * raw
+    frac = frac_min + (1.0 - float(L) * frac_min) * raw
 
-    t1 = (T * frac[:, 0:1]).clamp_min(1e-4)
-    t2 = (T * frac[:, 1:2]).clamp_min(1e-4)
-    t3 = (T * frac[:, 2:3]).clamp_min(1e-4)
-
-    # Re-normalize to guarantee exact sum T after clamping.
-    tsum = (t1 + t2 + t3).clamp_min(1e-12)
+    t_list = [(T * frac[:, i : i + 1]).clamp_min(1e-4) for i in range(L)]
+    tsum = sum(t_list).clamp_min(1e-12)
     scale = T / tsum
-    t1 = t1 * scale
-    t2 = t2 * scale
-    t3 = t3 * scale
+    t_list = [ti * scale for ti in t_list]
 
-    E1 = _uniform(n, e_min, e_max, device=device)
-    E2 = _uniform(n, e_min, e_max, device=device)
-    E3 = _uniform(n, e_min, e_max, device=device)
+    E_list = [_uniform(n, e_min, e_max, device=device) for _ in range(L)]
     r = _uniform(n, r_min, r_max, device=device)
     mu = _uniform(n, mu_min, mu_max, device=device)
     v0 = _uniform(n, v0_min, v0_max, device=device)
 
-    return torch.cat([E1, t1, E2, t2, E3, t3, r, mu, v0], dim=1)
+    parts = []
+    for e_i, t_i in zip(E_list, t_list):
+        parts.extend([e_i, t_i])
+    parts.extend([r, mu, v0])
+    return torch.cat(parts, dim=1)
 
 
 def _assemble_input(xyz: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
     if xyz.ndim != 2 or xyz.shape[1] != 3:
         raise ValueError(f"Expected xyz shaped (n,3), got {tuple(xyz.shape)}")
-    if params.ndim != 2 or params.shape[1] != 9:
-        raise ValueError(f"Expected params shaped (n,9), got {tuple(params.shape)}")
+    if params.ndim != 2 or params.shape[1] != _param_dim():
+        raise ValueError(f"Expected params shaped (n,{_param_dim()}), got {tuple(params.shape)}")
     x = torch.cat([xyz, params], dim=1)
     if x.shape[1] != _DIN:
         raise ValueError(f"Internal error: expected input dim {_DIN}, got {x.shape[1]}")
@@ -229,13 +230,18 @@ def _assemble_input(xyz: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
 
 
 def _total_thickness_from_params(params: torch.Tensor) -> torch.Tensor:
-    return (params[:, 1:2] + params[:, 3:4] + params[:, 5:6]).clamp_min(1e-8)
+    L = _num_layers()
+    t_cols = params[:, 1 : 2 * L : 2]
+    return t_cols.sum(dim=1, keepdim=True).clamp_min(1e-8)
 
 
-def _interfaces_from_params(params: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    z1 = params[:, 1:2].clamp_min(0.0)
-    z2 = (params[:, 1:2] + params[:, 3:4]).clamp_min(0.0)
-    return z1, z2
+def _interfaces_from_params(params: torch.Tensor) -> list[torch.Tensor]:
+    L = _num_layers()
+    if L <= 1:
+        return []
+    t_cols = params[:, 1 : 2 * L : 2].clamp_min(0.0)  # (N, L)
+    cum = torch.cumsum(t_cols, dim=1)
+    return [cum[:, i : i + 1] for i in range(L - 1)]
 
 # Parameter range helper (keeps baseline configs intact)
 def _get_e_range():
@@ -301,80 +307,170 @@ def load_fem_supervision_data(n_points_per_e=None, e_values=None, thickness_valu
             t_min, t_max = _get_thickness_range()
             thickness_values = [t_min, 0.5 * (t_min + t_max), t_max]
     
+    L = _num_layers()
+    layer_fractions = getattr(config, "DATA_LAYER_FRACTIONS", None)
+    if layer_fractions is None:
+        # For 2 layers this is t1/T. For L!=2, it is ignored and we use equal splits.
+        layer_fractions = [0.5]
+    layered_random_cases = int(getattr(config, "DATA_LAYERED_RANDOM_CASES", 0) or 0)
+    mesh_cfg = None
+    if hasattr(config, "DATA_FEA_NE_X") and hasattr(config, "DATA_FEA_NE_Y") and hasattr(config, "DATA_FEA_NE_Z"):
+        mesh_cfg = {
+            "ne_x": int(getattr(config, "DATA_FEA_NE_X")),
+            "ne_y": int(getattr(config, "DATA_FEA_NE_Y")),
+            "ne_z": int(getattr(config, "DATA_FEA_NE_Z")),
+        }
+
+    # Count cases to allocate points per FEA solve.
+    if L <= 1:
+        n_cases = len(e_values) * len(thickness_values)
+    elif L == 2:
+        if layered_random_cases > 0:
+            n_cases = layered_random_cases
+        else:
+            n_cases = len(thickness_values) * len(layer_fractions) * (len(e_values) ** 2)
+    else:
+        # Avoid combinatorial explosion; use equal thickness splits and same E-values per layer.
+        n_cases = len(e_values) * len(thickness_values)
+
     if n_points_per_e is None:
         if hasattr(config, "N_DATA_POINTS"):
-            n_points_per_e = config.N_DATA_POINTS // max(1, (len(e_values) * len(thickness_values)))
+            n_points_per_e = int(config.N_DATA_POINTS) // max(1, int(n_cases))
         else:
             n_points_per_e = 0
     
     x_data_list = []
     u_data_list = []
     
-    for thickness in thickness_values:
-        for E_val in e_values:
-            print(f"  Generating FEM supervision for E={E_val}, thickness={thickness}...")
-            
-            # Run FEM solver
-            cfg = {
-                'geometry': {'Lx': config.Lx, 'Ly': config.Ly, 'H': thickness},
-                'material': {'E': E_val, 'nu': config.nu_vals[0]},
-                'load_patch': {
-                    'pressure': config.p0,
-                    'x_start': config.LOAD_PATCH_X[0] / config.Lx,
-                    'x_end': config.LOAD_PATCH_X[1] / config.Lx,
-                    'y_start': config.LOAD_PATCH_Y[0] / config.Ly,
-                    'y_end': config.LOAD_PATCH_Y[1] / config.Ly
-                }
-            }
-            x_nodes, y_nodes, z_nodes, u_grid = fem_solver.solve_fem(cfg)
-            
-            # Create mesh grid for all FEM nodes
-            nx, ny, nz = len(x_nodes), len(y_nodes), len(z_nodes)
-            X, Y, Z = np.meshgrid(x_nodes, y_nodes, z_nodes, indexing='ij')
-            
-            # Flatten to get all points
-            x_flat = X.flatten()
-            y_flat = Y.flatten()
-            z_flat = Z.flatten()
-            u_flat = u_grid.reshape(-1, 3)
-            
-            # Random sampling (sparse)
-            total_points = len(x_flat)
-            indices = np.random.choice(total_points, size=min(n_points_per_e, total_points), replace=False)
-            
-            # Create input points with (E1,t1,E2,t2,E3,t3) and global params.
-            r_min, r_max = _get_restitution_range()
-            mu_min, mu_max = _get_friction_range()
-            v0_min, v0_max = _get_impact_velocity_range()
-            restitution = np.ones(len(indices)) * (0.5 * (r_min + r_max))
-            friction = np.ones(len(indices)) * (0.5 * (mu_min + mu_max))
-            impact_velocity = np.ones(len(indices)) * (0.5 * (v0_min + v0_max))
-            t1 = np.ones(len(indices)) * (thickness / 3.0)
-            t2 = np.ones(len(indices)) * (thickness / 3.0)
-            t3 = np.ones(len(indices)) * (thickness / 3.0)
+    def _solve_and_sample(cfg, layer_E, layer_t, *, label: str):
+        print(f"  Generating FEM supervision for {label}...")
+        x_nodes, y_nodes, z_nodes, u_grid = fem_solver.solve_fem(cfg)
+        X, Y, Z = np.meshgrid(x_nodes, y_nodes, z_nodes, indexing="ij")
+        x_flat = X.flatten()
+        y_flat = Y.flatten()
+        z_flat = Z.flatten()
+        u_flat = np.asarray(u_grid, dtype=float).reshape(-1, 3)
+        total_points = len(x_flat)
+        if total_points == 0 or int(n_points_per_e) <= 0:
+            return
+        indices = np.random.choice(total_points, size=min(int(n_points_per_e), total_points), replace=False)
 
-            x_sampled = np.stack([
-                x_flat[indices],
-                y_flat[indices],
-                z_flat[indices],
-                np.ones(len(indices)) * E_val,
-                t1,
-                np.ones(len(indices)) * E_val,
-                t2,
-                np.ones(len(indices)) * E_val,
-                t3,
-                restitution,
-                friction,
-                impact_velocity
-            ], axis=1)
-            
-            u_sampled = u_flat[indices]
-            
-            x_data_list.append(torch.tensor(x_sampled, dtype=torch.float32))
-            u_data_list.append(torch.tensor(u_sampled, dtype=torch.float32))
+        r_min, r_max = _get_restitution_range()
+        mu_min, mu_max = _get_friction_range()
+        v0_min, v0_max = _get_impact_velocity_range()
+        restitution = np.ones(len(indices), dtype=np.float32) * (0.5 * (r_min + r_max))
+        friction = np.ones(len(indices), dtype=np.float32) * (0.5 * (mu_min + mu_max))
+        impact_velocity = np.ones(len(indices), dtype=np.float32) * (0.5 * (v0_min + v0_max))
+
+        cols = [
+            x_flat[indices].astype(np.float32),
+            y_flat[indices].astype(np.float32),
+            z_flat[indices].astype(np.float32),
+        ]
+        for Ei, ti in zip(layer_E, layer_t):
+            cols.append(np.ones(len(indices), dtype=np.float32) * float(Ei))
+            cols.append(np.ones(len(indices), dtype=np.float32) * float(ti))
+        cols.extend([restitution, friction, impact_velocity])
+        x_sampled = np.stack(cols, axis=1)
+        u_sampled = u_flat[indices].astype(np.float32, copy=False)
+        x_data_list.append(torch.tensor(x_sampled, dtype=torch.float32))
+        u_data_list.append(torch.tensor(u_sampled, dtype=torch.float32))
+
+    if L == 2 and layered_random_cases > 0:
+        e_min, e_max = _get_e_range()
+        for k in range(layered_random_cases):
+            thickness = float(np.random.choice(thickness_values))
+            f = float(np.random.choice(layer_fractions)) if layer_fractions else float(np.random.rand())
+            f = max(1e-4, min(1.0 - 1e-4, f))
+            E1 = float(np.random.rand() * (e_max - e_min) + e_min)
+            E2 = float(np.random.rand() * (e_max - e_min) + e_min)
+            t1 = thickness * f
+            t2 = thickness - t1
+            cfg = {
+                "geometry": {"Lx": config.Lx, "Ly": config.Ly, "H": thickness},
+                **({"mesh": dict(mesh_cfg)} if mesh_cfg is not None else {}),
+                "layers": [
+                    {"t": float(t1), "E": float(E1), "nu": float(getattr(config, "NU_FIXED", config.nu_vals[0]))},
+                    {"t": float(t2), "E": float(E2), "nu": float(getattr(config, "NU_FIXED", config.nu_vals[0]))},
+                ],
+                "load_patch": {
+                    "pressure": config.p0,
+                    "x_start": config.LOAD_PATCH_X[0] / config.Lx,
+                    "x_end": config.LOAD_PATCH_X[1] / config.Lx,
+                    "y_start": config.LOAD_PATCH_Y[0] / config.Ly,
+                    "y_end": config.LOAD_PATCH_Y[1] / config.Ly,
+                },
+            }
+            _solve_and_sample(cfg, [E1, E2], [t1, t2], label=f"rand{k}: E1={E1:.3f},E2={E2:.3f},H={thickness:.3f},t1/T={f:.2f}")
+    else:
+        for thickness in thickness_values:
+            thickness = float(thickness)
+            if L <= 1:
+                for E_val in e_values:
+                    E_val = float(E_val)
+                    cfg = {
+                        "geometry": {"Lx": config.Lx, "Ly": config.Ly, "H": thickness},
+                        **({"mesh": dict(mesh_cfg)} if mesh_cfg is not None else {}),
+                        "material": {"E": E_val, "nu": config.nu_vals[0]},
+                        "load_patch": {
+                            "pressure": config.p0,
+                            "x_start": config.LOAD_PATCH_X[0] / config.Lx,
+                            "x_end": config.LOAD_PATCH_X[1] / config.Lx,
+                            "y_start": config.LOAD_PATCH_Y[0] / config.Ly,
+                            "y_end": config.LOAD_PATCH_Y[1] / config.Ly,
+                        },
+                    }
+                    _solve_and_sample(cfg, [E_val], [thickness], label=f"E={E_val}, H={thickness}")
+            elif L == 2:
+                for frac in layer_fractions:
+                    f = float(frac)
+                    f = max(1e-4, min(1.0 - 1e-4, f))
+                    t1 = thickness * f
+                    t2 = thickness - t1
+                    for E1 in e_values:
+                        for E2 in e_values:
+                            E1 = float(E1)
+                            E2 = float(E2)
+                            cfg = {
+                                "geometry": {"Lx": config.Lx, "Ly": config.Ly, "H": thickness},
+                                **({"mesh": dict(mesh_cfg)} if mesh_cfg is not None else {}),
+                                "layers": [
+                                    {"t": float(t1), "E": float(E1), "nu": float(getattr(config, "NU_FIXED", config.nu_vals[0]))},
+                                    {"t": float(t2), "E": float(E2), "nu": float(getattr(config, "NU_FIXED", config.nu_vals[0]))},
+                                ],
+                                "load_patch": {
+                                    "pressure": config.p0,
+                                    "x_start": config.LOAD_PATCH_X[0] / config.Lx,
+                                    "x_end": config.LOAD_PATCH_X[1] / config.Lx,
+                                    "y_start": config.LOAD_PATCH_Y[0] / config.Ly,
+                                    "y_end": config.LOAD_PATCH_Y[1] / config.Ly,
+                                },
+                            }
+                            _solve_and_sample(cfg, [E1, E2], [t1, t2], label=f"E1={E1},E2={E2},H={thickness},t1/T={f:.2f}")
+            else:
+                for E_val in e_values:
+                    E_val = float(E_val)
+                    t_list = [thickness / float(L)] * L
+                    cfg = {
+                        "geometry": {"Lx": config.Lx, "Ly": config.Ly, "H": thickness},
+                        **({"mesh": dict(mesh_cfg)} if mesh_cfg is not None else {}),
+                        "layers": [{"t": float(ti), "E": float(E_val), "nu": float(getattr(config, "NU_FIXED", config.nu_vals[0]))} for ti in t_list],
+                        "load_patch": {
+                            "pressure": config.p0,
+                            "x_start": config.LOAD_PATCH_X[0] / config.Lx,
+                            "x_end": config.LOAD_PATCH_X[1] / config.Lx,
+                            "y_start": config.LOAD_PATCH_Y[0] / config.Ly,
+                            "y_end": config.LOAD_PATCH_Y[1] / config.Ly,
+                        },
+                    }
+                    _solve_and_sample(cfg, [E_val] * L, t_list, label=f"E={E_val}, H={thickness}, L={L}")
     
-    x_data = torch.cat(x_data_list, dim=0)
-    u_data = torch.cat(u_data_list, dim=0)
+    if not x_data_list:
+        x_data = torch.zeros((0, _din()), dtype=torch.float32)
+        u_data = torch.zeros((0, 3), dtype=torch.float32)
+    else:
+        x_data = torch.cat(x_data_list, dim=0)
+        u_data = torch.cat(u_data_list, dim=0)
     
     print(f"  Loaded {len(x_data)} sparse FEM supervision points")
     return x_data, u_data
@@ -1052,34 +1148,30 @@ def get_data(prev_data=None, residuals=None):
         side_free = side_all
         side_free_normal = side_all_normal
 
-    # Interface samples
+    # Interface samples (one plane per interface).
     n_intf = int(getattr(config, "N_INTERFACES", 4000))
     params_i = _sample_layer_params(n_intf)
-    z1, z2 = _interfaces_from_params(params_i)
+    z_intfs = _interfaces_from_params(params_i)
     xi = _uniform(n_intf, 0.0, float(config.Lx))
     yi = _uniform(n_intf, 0.0, float(config.Ly))
-    intf1 = _assemble_input(torch.cat([xi, yi, z1], dim=1), params_i)
-    intf2 = _assemble_input(torch.cat([xi, yi, z2], dim=1), params_i)
+    interfaces = [_assemble_input(torch.cat([xi, yi, zi], dim=1), params_i) for zi in z_intfs]
 
     # Near-interface band samples (for displacement continuity smoothing).
     n_band = int(getattr(config, "N_INTERFACE_BAND", 0))
     if n_band > 0:
         params_b = _sample_layer_params(n_band)
         T_b = _total_thickness_from_params(params_b)
-        z1b, z2b = _interfaces_from_params(params_b)
+        z_intfs_b = _interfaces_from_params(params_b)
         band_frac = float(getattr(config, "INTERFACE_BAND_FRAC", 0.05))
         band = (band_frac * T_b).clamp_min(1e-6)
-        delta1 = (torch.rand(n_band, 1) - 0.5) * 2.0 * band
-        delta2 = (torch.rand(n_band, 1) - 0.5) * 2.0 * band
-        zb1 = torch.clamp(z1b + delta1, min=0.0)
-        zb1 = torch.minimum(zb1, T_b)
-        zb2 = torch.clamp(z2b + delta2, min=0.0)
-        zb2 = torch.minimum(zb2, T_b)
         xb = _uniform(n_band, 0.0, float(config.Lx))
         yb = _uniform(n_band, 0.0, float(config.Ly))
-        intf1_band = _assemble_input(torch.cat([xb, yb, zb1], dim=1), params_b)
-        intf2_band = _assemble_input(torch.cat([xb, yb, zb2], dim=1), params_b)
-        interfaces_band = [intf1_band, intf2_band]
+        interfaces_band = []
+        for zi in z_intfs_b:
+            delta = (torch.rand(n_band, 1) - 0.5) * 2.0 * band
+            zb = torch.clamp(zi + delta, min=0.0)
+            zb = torch.minimum(zb, T_b)
+            interfaces_band.append(_assemble_input(torch.cat([xb, yb, zb], dim=1), params_b))
     else:
         interfaces_band = None
 
@@ -1092,7 +1184,7 @@ def get_data(prev_data=None, residuals=None):
         "top_free_normal": torch.tensor([[0.0, 0.0, 1.0]], dtype=torch.float32).repeat(top_free.shape[0], 1),
         "side_free": side_free,
         "side_free_normal": side_free_normal.to(dtype=torch.float32),
-        "interfaces": [intf1, intf2],
+        "interfaces": interfaces,
     }
     if interior_energy is not None:
         out["interior_energy"] = interior_energy
@@ -1387,7 +1479,7 @@ def get_data_cad(prev_data=None, residuals=None):
     # normalization, you must also disable hard side BC masks (`USE_HARD_SIDE_BC`) or
     # ensure coordinates are compatible with the mask logic in `pinn-workflow/model.py`.
 
-    # Assemble tensors (x,y,z,E1,t1,E2,t2,E3,t3,r,mu,v0)
+    # Assemble tensors (x,y,z,E1,t1,...,EL,tL,r,mu,v0)
     interior_t = torch.tensor(interior_xyz, dtype=torch.float32)
     top_load_t = torch.tensor(top_load_xyz, dtype=torch.float32)
     top_free_t = torch.tensor(top_free_xyz, dtype=torch.float32)
@@ -1428,14 +1520,13 @@ def get_data_cad(prev_data=None, residuals=None):
     # Interfaces in CAD mode: sample (x,y) in bounds and z at layer interfaces; force sum thickness=CAD thickness.
     n_intf = int(getattr(config, "N_INTERFACES", 4000))
     params_i = _cad_layer_params_for_points(n_intf, thickness)
-    z1, z2 = _interfaces_from_params(params_i)
+    z_intfs = _interfaces_from_params(params_i)
     # Use CAD bounds in returned coordinate system (normalized or raw).
     bmin = torch.tensor(dst_min, dtype=torch.float32).view(1, 3)
     bmax = torch.tensor(dst_max, dtype=torch.float32).view(1, 3)
     xi = _uniform(n_intf, float(bmin[0, 0]), float(bmax[0, 0]))
     yi = _uniform(n_intf, float(bmin[0, 1]), float(bmax[0, 1]))
-    intf1 = _assemble_input(torch.cat([xi, yi, z1], dim=1), params_i)
-    intf2 = _assemble_input(torch.cat([xi, yi, z2], dim=1), params_i)
+    interfaces = [_assemble_input(torch.cat([xi, yi, zi], dim=1), params_i) for zi in z_intfs]
 
     out = {
         "interior": [interior],
@@ -1446,7 +1537,7 @@ def get_data_cad(prev_data=None, residuals=None):
         "top_free_normal": torch.tensor(top_free_n, dtype=torch.float32) if sampler == "tessellation" else torch.tensor([[0.0, 0.0, 1.0]], dtype=torch.float32).repeat(top_free.shape[0], 1),
         "side_free": side_free,
         "side_free_normal": side_free_normal,
-        "interfaces": [intf1, intf2],
+        "interfaces": interfaces,
     }
     if sampler == "tessellation":
         out["top_load_area"] = float(top_load_area)

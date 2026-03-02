@@ -5,45 +5,64 @@ import torch
 import torch.autograd as autograd
 import pinn_config as config
 
+def _n_layers() -> int:
+    n = int(getattr(config, "NUM_LAYERS", 2))
+    if n < 1:
+        raise ValueError(f"config.NUM_LAYERS must be >= 1, got {n}")
+    return n
+
+def _col_E(layer: int) -> int:
+    return 3 + 2 * int(layer)
+
+def _col_t(layer: int) -> int:
+    return 3 + 2 * int(layer) + 1
+
+def _col_r() -> int:
+    return 3 + 2 * _n_layers()
+
+def _col_mu() -> int:
+    return _col_r() + 1
+
+def _col_v0() -> int:
+    return _col_r() + 2
+
 def _layer_idx(x: torch.Tensor) -> torch.Tensor:
     """
-    x layout: [x,y,z,E1,t1,E2,t2,E3,t3,r,mu,v0]
-    Returns (N,) long tensor in {0,1,2}.
+    x layout: [x,y,z,E1,t1,...,EL,tL,r,mu,v0]
+    Returns (N,) long tensor in {0,...,L-1}.
     """
+    n_layers = _n_layers()
+    if n_layers <= 1:
+        return torch.zeros((x.shape[0],), device=x.device, dtype=torch.long)
     z = x[:, 2:3]
-    t1 = torch.clamp(x[:, 4:5], min=1e-4)
-    t2 = torch.clamp(x[:, 6:7], min=1e-4)
-    z1 = t1
-    z2 = t1 + t2
-    idx0 = z < z1
-    idx1 = (z >= z1) & (z < z2)
-    out = torch.full((x.shape[0],), 2, device=x.device, dtype=torch.long)
-    out[idx0[:, 0]] = 0
-    out[idx1[:, 0]] = 1
+    t_cols = [torch.clamp(x[:, _col_t(i) : _col_t(i) + 1], min=1e-4) for i in range(n_layers)]
+    cum = torch.cumsum(torch.cat(t_cols, dim=1), dim=1)  # (N, L)
+    interfaces = [cum[:, i : i + 1] for i in range(n_layers - 1)]
+    out = torch.full((x.shape[0],), n_layers - 1, device=x.device, dtype=torch.long)
+    for li, zi in enumerate(interfaces):
+        m = z < zi
+        out[m[:, 0]] = li
     return out
 
 
 def _select_E_local(x: torch.Tensor) -> torch.Tensor:
-    E1 = x[:, 3:4]
-    E2 = x[:, 5:6]
-    E3 = x[:, 7:8]
-    idx = _layer_idx(x)
-    E = torch.where(idx.view(-1, 1) == 0, E1, torch.where(idx.view(-1, 1) == 1, E2, E3))
+    n_layers = _n_layers()
+    Es = torch.cat([x[:, _col_E(i) : _col_E(i) + 1] for i in range(n_layers)], dim=1)  # (N, L)
+    idx = _layer_idx(x).unsqueeze(1)  # (N, 1)
+    E = torch.gather(Es, dim=1, index=idx)  # (N, 1)
     return torch.clamp(E, min=1e-8)
 
 def _E_eff(x: torch.Tensor) -> torch.Tensor:
     """
     Thickness-weighted effective modulus (N,1) for global decode.
-    x layout: [x,y,z,E1,t1,E2,t2,E3,t3,r,mu,v0]
+    x layout: [x,y,z,E1,t1,...,EL,tL,r,mu,v0]
     """
-    E1 = torch.clamp(x[:, 3:4], min=1e-8)
-    t1 = torch.clamp(x[:, 4:5], min=1e-8)
-    E2 = torch.clamp(x[:, 5:6], min=1e-8)
-    t2 = torch.clamp(x[:, 6:7], min=1e-8)
-    E3 = torch.clamp(x[:, 7:8], min=1e-8)
-    t3 = torch.clamp(x[:, 8:9], min=1e-8)
-    T = (t1 + t2 + t3).clamp_min(1e-8)
-    return (E1 * t1 + E2 * t2 + E3 * t3) / T
+    n_layers = _n_layers()
+    Es = [torch.clamp(x[:, _col_E(i) : _col_E(i) + 1], min=1e-8) for i in range(n_layers)]
+    Ts = [torch.clamp(x[:, _col_t(i) : _col_t(i) + 1], min=1e-8) for i in range(n_layers)]
+    T = torch.clamp(sum(Ts), min=1e-8)
+    num = sum(e * t for e, t in zip(Es, Ts))
+    return num / T
 
 def decode_u(v: torch.Tensor, x: torch.Tensor, *, E_override: torch.Tensor | None = None) -> torch.Tensor:
     """
@@ -79,12 +98,29 @@ def decode_u(v: torch.Tensor, x: torch.Tensor, *, E_override: torch.Tensor | Non
             u = u * b
     return u
 
+def encode_v(u: torch.Tensor, x: torch.Tensor, *, E_override: torch.Tensor | None = None) -> torch.Tensor:
+    """
+    Inverse of `decode_u` for displacement-only networks:
+      v = u              (mode="none")
+      v = u * E_eff      (mode="global")
+      v = u * E_local    (mode="local")
+    """
+    if u.shape[1] > 3:
+        u = u[:, 0:3]
+    mode = str(getattr(config, "DISPLACEMENT_DECODE_MODE", "none")).lower().strip()
+    if mode in {"none", "identity", "u"}:
+        return u
+    if mode in {"global", "eff", "e_eff", "avg"}:
+        E = E_override if E_override is not None else _E_eff(x)
+        return u * torch.clamp(E, min=1e-8)
+    E = E_override if E_override is not None else _select_E_local(x)
+    return u * torch.clamp(E, min=1e-8)
+
 
 def _total_thickness(x: torch.Tensor) -> torch.Tensor:
-    t1 = torch.clamp(x[:, 4:5], min=1e-4)
-    t2 = torch.clamp(x[:, 6:7], min=1e-4)
-    t3 = torch.clamp(x[:, 8:9], min=1e-4)
-    return torch.clamp(t1 + t2 + t3, min=1e-4)
+    n_layers = _n_layers()
+    Ts = [torch.clamp(x[:, _col_t(i) : _col_t(i) + 1], min=1e-4) for i in range(n_layers)]
+    return torch.clamp(sum(Ts), min=1e-4)
 
 
 def _traction_from_stress(sig, normals):
@@ -218,11 +254,11 @@ def compute_loss(model, data, device, weights=None):
         mu_min, mu_max = getattr(config, "FRICTION_RANGE", (0.3, 0.3))
         v0_min, v0_max = getattr(config, "IMPACT_VELOCITY_RANGE", (1.0, 1.0))
         if r_max > r_min:
-            x_int_variant[:, 9:10] = torch.rand_like(x_int_variant[:, 9:10]) * (r_max - r_min) + r_min
+            x_int_variant[:, _col_r() : _col_r() + 1] = torch.rand_like(x_int_variant[:, _col_r() : _col_r() + 1]) * (r_max - r_min) + r_min
         if mu_max > mu_min:
-            x_int_variant[:, 10:11] = torch.rand_like(x_int_variant[:, 10:11]) * (mu_max - mu_min) + mu_min
+            x_int_variant[:, _col_mu() : _col_mu() + 1] = torch.rand_like(x_int_variant[:, _col_mu() : _col_mu() + 1]) * (mu_max - mu_min) + mu_min
         if v0_max > v0_min:
-            x_int_variant[:, 11:12] = torch.rand_like(x_int_variant[:, 11:12]) * (v0_max - v0_min) + v0_min
+            x_int_variant[:, _col_v0() : _col_v0() + 1] = torch.rand_like(x_int_variant[:, _col_v0() : _col_v0() + 1]) * (v0_max - v0_min) + v0_min
         v_int_variant = model(x_int_variant)
         impact_invariance_loss = torch.mean((v_int - v_int_variant) ** 2)
     else:
@@ -337,8 +373,8 @@ def compute_loss(model, data, device, weights=None):
     if n_top is None and getattr(config, "USE_EXPLICIT_IMPACT_PHYSICS", False):
         # Restitution-aware normal traction:
         # lower restitution -> stronger dissipative/impact contact response.
-        restitution_local = torch.clamp(x_top_load[:, 9:10], 0.0, 1.0)
-        impact_velocity_local = torch.clamp(x_top_load[:, 11:12], min=0.0)
+        restitution_local = torch.clamp(x_top_load[:, _col_r() : _col_r() + 1], 0.0, 1.0)
+        impact_velocity_local = torch.clamp(x_top_load[:, _col_v0() : _col_v0() + 1], min=0.0)
         thickness_local = torch.clamp(_total_thickness(x_top_load), min=1e-8)
         compression = torch.relu(-u_top[:, 2:3]) / thickness_local
         gain = float(getattr(config, "IMPACT_RESTITUTION_GAIN", 0.75))
@@ -353,7 +389,7 @@ def compute_loss(model, data, device, weights=None):
         total_loss += weights.get('impact_contact', 0.0) * impact_contact_loss
 
         # Coulomb limit: ||T_t|| <= mu * |T_n| on loaded patch.
-        mu_local = torch.clamp(x_top_load[:, 10:11], min=0.0)
+        mu_local = torch.clamp(x_top_load[:, _col_mu() : _col_mu() + 1], min=0.0)
         tangential_mag = torch.norm(T[:, :2], dim=1, keepdim=True)
         normal_mag = torch.abs(T[:, 2:3])
         friction_limit = mu_local * normal_mag
@@ -504,16 +540,17 @@ def compute_loss(model, data, device, weights=None):
         loss_bot = torch.zeros((), device=device)
         losses['free_bot'] = loss_bot
 
-    # --- 3.5 Interface continuity losses (bonded 3-layer stack) ---
+    # --- 3.5 Interface continuity losses (bonded layered stack) ---
     interfaces = data.get("interfaces", None)
-    if interfaces is not None and len(interfaces) >= 2:
+    n_layers = _n_layers()
+    if interfaces is not None and n_layers >= 2 and len(interfaces) >= (n_layers - 1):
         interface_u_losses = []
         interface_t_losses = []
         n_intf = torch.tensor([[0.0, 0.0, 1.0]], device=device, dtype=x_int.dtype)
-        for k, (layer_a, layer_b) in enumerate([(0, 1), (1, 2)]):
+        for k, (layer_a, layer_b) in enumerate([(i, i + 1) for i in range(n_layers - 1)]):
             x_intf = interfaces[k].to(device).detach().clone().requires_grad_(True)
-            Ea = torch.clamp(x_intf[:, 3 + 2 * layer_a : 3 + 2 * layer_a + 1], min=1e-8)
-            Eb = torch.clamp(x_intf[:, 3 + 2 * layer_b : 3 + 2 * layer_b + 1], min=1e-8)
+            Ea = torch.clamp(x_intf[:, _col_E(layer_a) : _col_E(layer_a) + 1], min=1e-8)
+            Eb = torch.clamp(x_intf[:, _col_E(layer_b) : _col_E(layer_b) + 1], min=1e-8)
 
             va = model(x_intf, layer_idx=layer_a)
             vb = model(x_intf, layer_idx=layer_b)
@@ -554,10 +591,10 @@ def compute_loss(model, data, device, weights=None):
 
     # Optional: near-interface displacement continuity band (smooths kinks from hard routing).
     interfaces_band = data.get("interfaces_band", None)
-    if interfaces_band is not None and len(interfaces_band) >= 2:
+    if interfaces_band is not None and n_layers >= 2 and len(interfaces_band) >= (n_layers - 1):
         band_losses = []
         band_grad_losses = []
-        for k, (layer_a, layer_b) in enumerate([(0, 1), (1, 2)]):
+        for k, (layer_a, layer_b) in enumerate([(i, i + 1) for i in range(n_layers - 1)]):
             x_band = interfaces_band[k].to(device).detach().clone().requires_grad_(True)
             va = model(x_band, layer_idx=layer_a)
             vb = model(x_band, layer_idx=layer_b)
@@ -584,12 +621,9 @@ def compute_loss(model, data, device, weights=None):
         x_data = data['x_data'].to(device)
         u_data = data['u_data'].to(device)
         
-        # Predict v directly (Stress Potential)
+        # Predict v directly (network output space).
         v_pred = model(x_data)
-        E_data = _select_E_local(x_data)
-        
-        # Ground truth mapping: v_target = u_data * E.
-        v_target = u_data * E_data
+        v_target = encode_v(u_data, x_data)
         
         loss_data = torch.mean((v_pred - v_target)**2)
         losses['data'] = loss_data

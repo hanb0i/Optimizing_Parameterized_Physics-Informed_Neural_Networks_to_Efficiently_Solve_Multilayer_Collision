@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import os
 import sys
@@ -13,20 +15,19 @@ if PINN_WORKFLOW_DIR not in sys.path:
 
 import pinn_config as config
 import model
+import physics
 
 
 @dataclass(frozen=True)
 class Case:
     name: str
-    t1: float
-    t2: float
-    t3: float
+    t: tuple[float, ...]
 
 
 def _infer_arch_from_state_dict(sd: dict) -> tuple[int, int]:
     first = sd.get("layers.0.net.0.weight")
     if first is None:
-        raise ValueError("Checkpoint does not look like 3-layer PINN (missing layers.0.net.0.weight).")
+        raise ValueError("Checkpoint does not look like a layered PINN (missing layers.0.net.0.weight).")
     neurons = int(first.shape[0])
     linear_indices = sorted(
         {
@@ -48,15 +49,21 @@ def _select_device(device_str: str | None) -> torch.device:
     return torch.device("cpu")
 
 
-def _parse_cases(spec: str | None, H: float) -> list[Case]:
+def _parse_cases(spec: str | None, H: float, *, num_layers: int) -> list[Case]:
     if not spec:
+        if num_layers == 2:
+            return [
+                Case("balanced", (H / 2.0, H / 2.0)),
+                Case("thick_top", (0.35 * H, 0.65 * H)),
+                Case("thick_bottom", (0.65 * H, 0.35 * H)),
+            ]
         return [
-            Case("balanced", H / 3.0, H / 3.0, H / 3.0),
-            Case("soft_core", 0.2 * H, 0.6 * H, 0.2 * H),
-            Case("thick_top", 0.2 * H, 0.2 * H, 0.6 * H),
-            Case("thick_bottom", 0.6 * H, 0.2 * H, 0.2 * H),
-            Case("thin_mid", 0.45 * H, 0.10 * H, 0.45 * H),
-            Case("thick_mid", 0.10 * H, 0.80 * H, 0.10 * H),
+            Case("balanced", (H / 3.0, H / 3.0, H / 3.0)),
+            Case("soft_core", (0.2 * H, 0.6 * H, 0.2 * H)),
+            Case("thick_top", (0.2 * H, 0.2 * H, 0.6 * H)),
+            Case("thick_bottom", (0.6 * H, 0.2 * H, 0.2 * H)),
+            Case("thin_mid", (0.45 * H, 0.10 * H, 0.45 * H)),
+            Case("thick_mid", (0.10 * H, 0.80 * H, 0.10 * H)),
         ]
 
     cases: list[Case] = []
@@ -70,10 +77,11 @@ def _parse_cases(spec: str | None, H: float) -> list[Case]:
         else:
             name, vals = f"case{len(cases)}", item
         parts = [p.strip() for p in vals.split(",")]
-        if len(parts) != 3:
-            raise ValueError(f"Invalid case '{item}'. Expected 'name:t1,t2,t3' or 't1,t2,t3'.")
-        t1, t2, t3 = (float(parts[0]), float(parts[1]), float(parts[2]))
-        cases.append(Case(name, t1, t2, t3))
+        if len(parts) != int(num_layers):
+            raise ValueError(
+                f"Invalid case '{item}'. Expected {num_layers} thicknesses like 'name:t1,...,t{num_layers}'."
+            )
+        cases.append(Case(name, tuple(float(p) for p in parts)))
     return cases
 
 
@@ -114,14 +122,15 @@ def main() -> None:
     pinn.eval()
 
     H = float(args.H)
-    cases = _parse_cases(args.cases, H)
+    num_layers = int(getattr(config, "NUM_LAYERS", 2))
+    cases = _parse_cases(args.cases, H, num_layers=num_layers)
     normalized: list[Case] = []
     for c in cases:
-        s = float(c.t1 + c.t2 + c.t3)
+        s = float(sum(c.t))
         if s <= 0:
             raise ValueError(f"Invalid thickness sum for case {c.name}: {s}")
         scale = H / s
-        normalized.append(Case(c.name, c.t1 * scale, c.t2 * scale, c.t3 * scale))
+        normalized.append(Case(c.name, tuple(float(ti) * scale for ti in c.t)))
     cases = normalized
 
     x = np.linspace(0.0, float(getattr(config, "Lx", 1.0)), int(args.nx), dtype=np.float32)
@@ -142,14 +151,21 @@ def main() -> None:
     stats = []
 
     for c in cases:
-        params = np.array([args.E1, c.t1, args.E2, c.t2, args.E3, c.t3, args.r, args.mu, args.v0], dtype=np.float32)[None, :]
+        E_vals = [float(args.E1), float(args.E2), float(args.E3)][:num_layers]
+        params_list = []
+        for Ei, ti in zip(E_vals, c.t):
+            params_list.extend([float(Ei), float(ti)])
+        params_list.extend([float(args.r), float(args.mu), float(args.v0)])
+        params = np.array(params_list, dtype=np.float32)[None, :]
 
         inp_top = np.concatenate(
             [np.stack([Xf, Yf, np.full_like(Xf, H)], axis=1).astype(np.float32), np.repeat(params, Xf.shape[0], axis=0)],
             axis=1,
         )
         with torch.no_grad():
-            uz_top = pinn(torch.tensor(inp_top, dtype=torch.float32, device=device))[:, 2].cpu().numpy().reshape(X.shape)
+            x_t = torch.tensor(inp_top, dtype=torch.float32, device=device)
+            v = pinn(x_t)
+            uz_top = physics.decode_u(v, x_t)[:, 2].cpu().numpy().reshape(X.shape)
         top_maps.append(uz_top)
         stats.append((c.name, float(uz_top[patch].mean()), float(uz_top[patch].min())))
 
@@ -161,7 +177,9 @@ def main() -> None:
             axis=1,
         )
         with torch.no_grad():
-            uz_xz = pinn(torch.tensor(inp_xz, dtype=torch.float32, device=device))[:, 2].cpu().numpy().reshape(Z2.shape)
+            x_t = torch.tensor(inp_xz, dtype=torch.float32, device=device)
+            v = pinn(x_t)
+            uz_xz = physics.decode_u(v, x_t)[:, 2].cpu().numpy().reshape(Z2.shape)
         xz_maps.append(uz_xz)
 
     import matplotlib
@@ -179,7 +197,7 @@ def main() -> None:
     for i, (c, uz) in enumerate(zip(cases, top_maps, strict=False)):
         ax = axes[i // cols][i % cols]
         im = ax.contourf(X, Y, uz, levels=60, cmap="jet", vmin=vmin, vmax=vmax)
-        ax.set_title(f"{c.name}\n(t1,t2,t3)=({c.t1:.4f},{c.t2:.4f},{c.t3:.4f})")
+        ax.set_title(f"{c.name}\n(t)=({','.join(f'{float(ti):.4f}' for ti in c.t)})")
         ax.set_xlabel("x")
         ax.set_ylabel("y")
         ax.plot([x0, x1, x1, x0, x0], [y0, y0, y1, y1, y0], "k-", lw=1.0)
@@ -199,8 +217,10 @@ def main() -> None:
         ax.set_title(f"{c.name} (y={float(args.y0):.2f})")
         ax.set_xlabel("x")
         ax.set_ylabel("z")
-        ax.axhline(c.t1, color="k", lw=1.0)
-        ax.axhline(c.t1 + c.t2, color="k", lw=1.0)
+        z_acc = 0.0
+        for ti in c.t[:-1]:
+            z_acc += float(ti)
+            ax.axhline(z_acc, color="k", lw=1.0)
         fig2.colorbar(im, ax=ax, shrink=0.85)
     for j in range(len(cases), rows * cols):
         axes2[j // cols][j % cols].axis("off")

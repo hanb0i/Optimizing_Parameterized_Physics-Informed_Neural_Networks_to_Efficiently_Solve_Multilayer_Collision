@@ -48,8 +48,9 @@ RESTITUTION_RANGE = [0.1, 0.9]
 FRICTION_RANGE = [0.0, 0.6]
 IMPACT_VELOCITY_RANGE = [0.2, 2.0]
 
-# --- 3-layer laminate parameterization (Version A: fixed Poisson's ratio) ---
-NUM_LAYERS = 3
+# --- Layered laminate parameterization (Version A: fixed Poisson's ratio) ---
+# This repo previously defaulted to 3 layers. The current default is 2 layers.
+NUM_LAYERS = 2
 NU_FIXED = 0.3  # fixed Poisson's ratio used for all layers
 
 # Layer thickness sampling: sample total thickness in THICKNESS_RANGE, then sample fractions that sum to 1.
@@ -61,8 +62,6 @@ PARAM_NAMES = [
     "t1",
     "E2",
     "t2",
-    "E3",
-    "t3",
     "restitution",
     "friction",
     "impact_velocity",
@@ -71,7 +70,8 @@ PARAM_DIM = len(PARAM_NAMES)
 
 # When matching a specific FEA case (physics-only), it can help to train with a single
 # fixed parameter vector so the collocation set represents one consistent geometry/material.
-TRAIN_FIXED_PARAMS = True
+# For parametric/generalization runs (recommended), set this to False.
+TRAIN_FIXED_PARAMS = False
 TRAIN_FIXED_E = 1.0
 TRAIN_FIXED_TOTAL_THICKNESS = H
 
@@ -79,9 +79,10 @@ TRAIN_FIXED_TOTAL_THICKNESS = H
 # If left as None, it falls back to TRAIN_FIXED_E and equal thickness splits.
 TRAIN_FIXED_E1 = 1.0
 TRAIN_FIXED_E2 = 5.0
+TRAIN_FIXED_T1 = H / 2.0
+TRAIN_FIXED_T2 = H / 2.0
+# Backward-compat knobs (unused when NUM_LAYERS=2).
 TRAIN_FIXED_E3 = 10.0
-TRAIN_FIXED_T1 = H / 3.0
-TRAIN_FIXED_T2 = H / 3.0
 TRAIN_FIXED_T3 = H / 3.0
 
 # Optional: explicit E sweep values for `verify_parametric_pinn.py`.
@@ -133,8 +134,8 @@ Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 p0 = 1.0 # Load magnitude
 
 # Optional path to an FEA solution file used for evaluation/logging (not for supervision).
-# Defaults set to the layered case used for `layered_best_stage3g_top.png`.
-FEA_NPY_PATH = "fea_solution_layered_E1_1_E2_5_E3_10_equal.npy"
+# For 2-layer runs, generate a matching file via `fea-workflow/scripts/generate_layered_solution.py`.
+FEA_NPY_PATH = "fea_solution_layered.npy"
 
 # --- Unit-consistent loss scaling ---
 # div(sigma) has units of stress/length; scale by a characteristic length.
@@ -191,7 +192,7 @@ TOP_FREE_RING_FRACTION = 0.3
 TOP_FREE_RING_WIDTH_FRAC = 0.08  # fraction of patch size (max of dx,dy)
 
 # Layer-network gating:
-# The 3-layer model uses three subnetworks; if we "hard route" by z, u(z) can develop kinks
+# The layered model uses NUM_LAYERS subnetworks; if we "hard route" by z, u(z) can develop kinks
 # that the interior PDE cannot smooth out (because the routing is non-differentiable).
 # Use a smooth sigmoid blend across interfaces so the composite field is differentiable in z.
 LAYER_GATING = "soft"  # "soft" or "hard"
@@ -240,7 +241,7 @@ WEIGHTS = {
     'interface_band_u': 1.0,
     'interface_band_grad': 0.5,
     'patch_uz_sup': 0.0,  # optional tiny depth anchor (disabled by default)
-    'data': 1.0
+    'data': 5.0
 }
 
 # Loss weight ramp: load-first to raise displacement while preserving shape.
@@ -293,7 +294,15 @@ FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 N_DATA_POINTS = 9000
 DATA_E_VALUES = [1.0, 5.0, 10.0]
 DATA_THICKNESS_VALUES = [0.05, 0.1, 0.15]
-USE_SUPERVISION_DATA = False
+# Mesh resolution for on-the-fly FEA supervision (lower = faster, higher = more accurate).
+DATA_FEA_NE_X = 18
+DATA_FEA_NE_Y = 18
+DATA_FEA_NE_Z = 18
+# For 2-layer supervision, the thickness split uses t1/T values in this list.
+DATA_LAYER_FRACTIONS = [0.5]
+# If set (>0) and NUM_LAYERS==2, randomly sample this many layered FEA cases instead of a full grid.
+DATA_LAYERED_RANDOM_CASES = 12
+USE_SUPERVISION_DATA = True
 
 # --- Explicit impact/friction physics controls ---
 # When enabled, restitution/friction influence boundary losses directly.

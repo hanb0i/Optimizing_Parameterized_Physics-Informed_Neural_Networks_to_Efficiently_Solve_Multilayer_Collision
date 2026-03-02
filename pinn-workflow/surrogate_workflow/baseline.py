@@ -14,6 +14,7 @@ if BASE_DIR not in sys.path:
 
 import model
 import pinn_config as pc
+import physics
 
 # Cache for the loaded PINN
 _PINN_MODEL = None
@@ -39,23 +40,29 @@ def compute_response(mu):
     """
     mu:
       - legacy: [E, thickness, restitution, friction, impact_velocity]
+      - 2-layer: [E1, t1, E2, t2, restitution, friction, impact_velocity]
       - 3-layer: [E1, t1, E2, t2, E3, t3, restitution, friction, impact_velocity]
     Returns: Peak vertical displacement magnitude |Uz_max|
     """
     pinn, device = _get_pinn()
-    
+
+    L = int(getattr(pc, "NUM_LAYERS", 2))
     if len(mu) == 5:
         E_val, t_val, r_val, mu_fric, v0_val = mu
-        E1, E2, E3 = E_val, E_val, E_val
-        t1 = t_val / 3.0
-        t2 = t_val / 3.0
-        t3 = t_val / 3.0
-    elif len(mu) == 9:
+        E_list = [float(E_val)] * L
+        t_list = [float(t_val) / float(L)] * L
+    elif L == 2 and len(mu) == 7:
+        E1, t1, E2, t2, r_val, mu_fric, v0_val = mu
+        E_list = [float(E1), float(E2)]
+        t_list = [float(t1), float(t2)]
+    elif L == 3 and len(mu) == 9:
         E1, t1, E2, t2, E3, t3, r_val, mu_fric, v0_val = mu
-        t_val = float(t1) + float(t2) + float(t3)
-        E_val = float(E3)
+        E_list = [float(E1), float(E2), float(E3)]
+        t_list = [float(t1), float(t2), float(t3)]
     else:
-        raise ValueError(f"Expected mu length 5 or 9, got {len(mu)}")
+        raise ValueError(f"Expected mu length 5, {(7 if L==2 else 9)}; got {len(mu)} (NUM_LAYERS={L})")
+
+    t_val = float(sum(t_list))
     
     # Grid search for peak displacement on top surface
     nx = 11
@@ -64,26 +71,22 @@ def compute_response(mu):
     X, Y = np.meshgrid(x, y)
     Xf, Yf = X.flatten(), Y.flatten()
     
-    Zf = np.ones_like(Xf) * t_val
-    E1f = np.ones_like(Xf) * float(E1)
-    E2f = np.ones_like(Xf) * float(E2)
-    E3f = np.ones_like(Xf) * float(E3)
-    t1f = np.ones_like(Xf) * float(t1)
-    t2f = np.ones_like(Xf) * float(t2)
-    t3f = np.ones_like(Xf) * float(t3)
+    Zf = np.ones_like(Xf) * float(t_val)
     Rf = np.ones_like(Xf) * r_val
     MFf = np.ones_like(Xf) * mu_fric
     Vf = np.ones_like(Xf) * v0_val
     
-    # Input layout: [x,y,z,E1,t1,E2,t2,E3,t3,r,mu,v0]
-    pts = np.stack([Xf, Yf, Zf, E1f, t1f, E2f, t2f, E3f, t3f, Rf, MFf, Vf], axis=1)
+    cols = [Xf, Yf, Zf]
+    for Ei, ti in zip(E_list, t_list):
+        cols.append(np.ones_like(Xf) * float(Ei))
+        cols.append(np.ones_like(Xf) * float(ti))
+    cols.extend([Rf, MFf, Vf])
+    pts = np.stack(cols, axis=1).astype(np.float32, copy=False)
     
     with torch.no_grad():
-        v = pinn(torch.tensor(pts, dtype=torch.float32).to(device)).cpu().numpy()
+        x_t = torch.tensor(pts, dtype=torch.float32).to(device)
+        v = pinn(x_t)
+        u = physics.decode_u(v, x_t).cpu().numpy()
     
-    uz = v[:, 2]
-    # Apply trained scaling parameters from pinn_config.py
-    t_scale = (float(pc.H) / t_val) ** float(pc.THICKNESS_COMPLIANCE_ALPHA)
-    u_final = (uz / (E_val ** float(pc.E_COMPLIANCE_POWER))) * t_scale
-    
-    return float(np.abs(np.min(u_final)))
+    uz = u[:, 2]
+    return float(np.abs(np.min(uz)))

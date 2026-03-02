@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 import torch.optim as optim
 import numpy as np
@@ -156,6 +158,7 @@ def _apply_env_overrides():
 
 def _load_compatible_state_dict(pinn, ckpt_path, device):
     sd = torch.load(ckpt_path, map_location=device, weights_only=True)
+    n_layers = len(getattr(pinn, "layers", [])) or int(getattr(config, "NUM_LAYERS", 2))
 
     # If loading an older single-net checkpoint, replicate weights into each layer subnetwork.
     if any(k.startswith("layer.") for k in sd.keys()):
@@ -163,7 +166,7 @@ def _load_compatible_state_dict(pinn, ckpt_path, device):
         for k, v in sd.items():
             if k.startswith("layer."):
                 suffix = k[len("layer.") :]
-                for li in range(3):
+                for li in range(n_layers):
                     replicated[f"layers.{li}.{suffix}"] = v
             else:
                 replicated[k] = v
@@ -172,54 +175,53 @@ def _load_compatible_state_dict(pinn, ckpt_path, device):
     target_sd = pinn.state_dict()
 
     def _adapt_first_layer(src_w: torch.Tensor, tgt_w: torch.Tensor) -> torch.Tensor:
-        # Map old feature layouts into the new 15-dim feature layout used by LayerNet.
-        # Old 11-dim layout (common):
-        #   [x,y,z_hat,E_norm,t_norm,r_norm,mu_norm,v0_norm,inv1,inv2,inv3]
-        # New 15-dim layout:
-        #   [x,y,z_hat,E1_norm,t1_scaled,E2_norm,t2_scaled,E3_norm,t3_scaled,r_norm,mu_norm,v0_norm,inv1,inv2,inv3]
-        if src_w.shape[1] == tgt_w.shape[1]:
+        # Map old feature layouts into the current LayerNet feature layout.
+        # Expected feature layout (dim = 9 + 2*L):
+        #   [x,y,z_hat, E1_norm,t1_scaled,...,EL_norm,tL_scaled, r_norm,mu_norm,v0_norm, inv1,inv2,inv3]
+        if src_w.shape[1] == tgt_w.shape[1] or src_w.shape[0] != tgt_w.shape[0]:
             return src_w
-        if src_w.shape[0] != tgt_w.shape[0]:
-            return src_w
+
+        def _infer_L(d: int) -> int | None:
+            if d < 9:
+                return None
+            if (d - 9) % 2 != 0:
+                return None
+            return (d - 9) // 2
+
+        Ls = _infer_L(int(src_w.shape[1]))
+        Lt = _infer_L(int(tgt_w.shape[1]))
+        if Ls is None or Lt is None:
+            adapted = torch.zeros_like(tgt_w)
+            n = min(int(src_w.shape[1]), int(tgt_w.shape[1]))
+            adapted[:, :n] = src_w[:, :n]
+            return adapted
+
         adapted = torch.zeros_like(tgt_w)
-        if src_w.shape[1] == 11 and tgt_w.shape[1] == 15:
-            adapted[:, 0:3] = src_w[:, 0:3]
-            adapted[:, 3] = src_w[:, 3]
-            adapted[:, 5] = src_w[:, 3]
-            adapted[:, 7] = src_w[:, 3]
-            adapted[:, 4] = src_w[:, 4]
-            adapted[:, 6] = src_w[:, 4]
-            adapted[:, 8] = src_w[:, 4]
-            adapted[:, 9:12] = src_w[:, 5:8]
-            adapted[:, 12:15] = src_w[:, 8:11]
-            return adapted
-        if src_w.shape[1] == 10 and tgt_w.shape[1] == 15:
-            adapted[:, 0:3] = src_w[:, 0:3]
-            adapted[:, 3] = src_w[:, 3]
-            adapted[:, 5] = src_w[:, 3]
-            adapted[:, 7] = src_w[:, 3]
-            adapted[:, 4] = src_w[:, 4]
-            adapted[:, 6] = src_w[:, 4]
-            adapted[:, 8] = src_w[:, 4]
-            adapted[:, 9:11] = src_w[:, 5:7]
-            adapted[:, 12:15] = src_w[:, 7:10]
-            return adapted
-        if src_w.shape[1] == 8 and tgt_w.shape[1] == 15:
-            adapted[:, 0:3] = src_w[:, 0:3]
-            adapted[:, 3] = src_w[:, 3]
-            adapted[:, 5] = src_w[:, 3]
-            adapted[:, 7] = src_w[:, 3]
-            adapted[:, 4] = src_w[:, 4]
-            adapted[:, 6] = src_w[:, 4]
-            adapted[:, 8] = src_w[:, 4]
-            adapted[:, 12:15] = src_w[:, 5:8]
-            return adapted
-        # Generic: copy as many leading columns as possible.
-        n = min(src_w.shape[1], tgt_w.shape[1])
-        adapted[:, :n] = src_w[:, :n]
+        adapted[:, 0:3] = src_w[:, 0:3]  # x,y,z_hat
+
+        # Per-layer (E_norm, t_scaled): copy min(Ls,Lt), then repeat last available.
+        for i in range(Lt):
+            si = min(i, max(0, Ls - 1))
+            adapted[:, 3 + 2 * i] = src_w[:, 3 + 2 * si]
+            adapted[:, 4 + 2 * i] = src_w[:, 4 + 2 * si]
+
+        # Impact params: old checkpoints may omit v0 or all impact params.
+        src_imp_start = 3 + 2 * Ls
+        tgt_imp_start = 3 + 2 * Lt
+        if int(src_w.shape[1]) >= src_imp_start + 3:
+            adapted[:, tgt_imp_start : tgt_imp_start + 3] = src_w[:, src_imp_start : src_imp_start + 3]
+        elif int(src_w.shape[1]) >= src_imp_start + 2:
+            adapted[:, tgt_imp_start : tgt_imp_start + 2] = src_w[:, src_imp_start : src_imp_start + 2]
+            adapted[:, tgt_imp_start + 2] = 0.5  # v0_norm default
+        else:
+            adapted[:, tgt_imp_start : tgt_imp_start + 3] = 0.5
+
+        # Invariants: last 3 columns (inv1,inv2,inv3) if present, else zeros.
+        if int(src_w.shape[1]) >= 3:
+            adapted[:, -3:] = src_w[:, -3:]
         return adapted
 
-    for li in range(3):
+    for li in range(n_layers):
         w_key = f"layers.{li}.net.0.weight"
         if w_key in sd and w_key in target_sd:
             src_w = sd[w_key]
@@ -229,9 +231,22 @@ def _load_compatible_state_dict(pinn, ckpt_path, device):
 
     # Adapt output layer when switching between displacement-only (3) and mixed (9) outputs.
     # Preserve the learned displacement rows and initialize extra stress rows to 0 for stability.
-    for li in range(3):
-        w_key = f"layers.{li}.net.8.weight"
-        b_key = f"layers.{li}.net.8.bias"
+    for li in range(n_layers):
+        # Find the last Linear layer index for this layer net.
+        prefix = f"layers.{li}.net."
+        idxs = []
+        for k in target_sd.keys():
+            if not (k.startswith(prefix) and k.endswith(".weight")):
+                continue
+            try:
+                idxs.append(int(k.split(".")[3]))
+            except Exception:
+                continue
+        if not idxs:
+            continue
+        out_idx = max(idxs)
+        w_key = f"layers.{li}.net.{out_idx}.weight"
+        b_key = f"layers.{li}.net.{out_idx}.bias"
         if w_key in sd and w_key in target_sd:
             src_w = sd[w_key]
             tgt_w = target_sd[w_key]
@@ -392,32 +407,38 @@ def train():
         Z_fea = fem_data['z']
         U_fea = fem_data['u']
         
-        # Prepare FEM evaluation grid for the 3-layer laminate PINN:
-        # input layout: [x,y,z,E1,t1,E2,t2,E3,t3,r,mu,v0]
-        pts_fea = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
+        # Prepare FEM evaluation grid for the layered PINN:
+        # input layout: [x,y,z,E1,t1,...,EL,tL,r,mu,v0]
+        pts_xyz = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1).astype(np.float32, copy=False)
+        n_layers = int(getattr(config, "NUM_LAYERS", 2))
         default_E = float(getattr(config, "TRAIN_FIXED_E", getattr(config, "E_vals", [1.0])[0]))
-        E1 = float(default_E if getattr(config, "TRAIN_FIXED_E1", None) is None else config.TRAIN_FIXED_E1)
-        E2 = float(default_E if getattr(config, "TRAIN_FIXED_E2", None) is None else config.TRAIN_FIXED_E2)
-        E3 = float(default_E if getattr(config, "TRAIN_FIXED_E3", None) is None else config.TRAIN_FIXED_E3)
+
+        E_list = []
+        for i in range(n_layers):
+            e_cfg = getattr(config, f"TRAIN_FIXED_E{i+1}", None)
+            E_list.append(float(default_E if e_cfg is None else e_cfg))
 
         t_total = float(getattr(config, "TRAIN_FIXED_TOTAL_THICKNESS", getattr(config, "H", 0.1)))
-        t1 = float((t_total / 3.0) if getattr(config, "TRAIN_FIXED_T1", None) is None else config.TRAIN_FIXED_T1)
-        t2 = float((t_total / 3.0) if getattr(config, "TRAIN_FIXED_T2", None) is None else config.TRAIN_FIXED_T2)
-        t3 = float((t_total / 3.0) if getattr(config, "TRAIN_FIXED_T3", None) is None else config.TRAIN_FIXED_T3)
+        t_cfgs = [getattr(config, f"TRAIN_FIXED_T{i+1}", None) for i in range(n_layers)]
+        if all(v is None for v in t_cfgs):
+            t_list = [t_total / float(n_layers)] * n_layers
+        else:
+            t_list = [float((t_total / n_layers) if v is None else v) for v in t_cfgs]
+            tsum = max(1e-8, float(sum(t_list)))
+            scale = t_total / tsum
+            t_list = [tv * scale for tv in t_list]
 
-        e1_ones = np.ones((pts_fea.shape[0], 1)) * E1
-        e2_ones = np.ones((pts_fea.shape[0], 1)) * E2
-        e3_ones = np.ones((pts_fea.shape[0], 1)) * E3
-        t1_ones = np.ones((pts_fea.shape[0], 1)) * t1
-        t2_ones = np.ones((pts_fea.shape[0], 1)) * t2
-        t3_ones = np.ones((pts_fea.shape[0], 1)) * t3
+        params_cols = []
+        for Ei, ti in zip(E_list, t_list):
+            params_cols.append(np.ones((pts_xyz.shape[0], 1), dtype=np.float32) * float(Ei))
+            params_cols.append(np.ones((pts_xyz.shape[0], 1), dtype=np.float32) * float(ti))
         r_ref = float(getattr(config, "RESTITUTION_REF", 0.5))
         mu_ref = float(getattr(config, "FRICTION_REF", 0.3))
         v0_ref = float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
         r_ones = np.ones((pts_fea.shape[0], 1)) * r_ref
         mu_ones = np.ones((pts_fea.shape[0], 1)) * mu_ref
         v0_ones = np.ones((pts_fea.shape[0], 1)) * v0_ref
-        pts_fea = np.hstack([pts_fea, e1_ones, t1_ones, e2_ones, t2_ones, e3_ones, t3_ones, r_ones, mu_ones, v0_ones])
+        pts_fea = np.hstack([pts_xyz, *params_cols, r_ones.astype(np.float32), mu_ones.astype(np.float32), v0_ones.astype(np.float32)])
         pts_fea_tensor = torch.tensor(pts_fea, dtype=torch.float32).to(device)
         u_fea_flat = U_fea.reshape(-1, 3)
         u_fea_abs_max = float(np.max(np.abs(u_fea_flat)))

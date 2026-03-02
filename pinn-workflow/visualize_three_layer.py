@@ -13,24 +13,29 @@ if PINN_WORKFLOW_DIR not in sys.path:
 
 import pinn_config as config
 import model
+import physics
 
 
-def _layer_id_grid(z: np.ndarray, t1: float, t2: float) -> np.ndarray:
-    z1 = float(t1)
-    z2 = float(t1 + t2)
-    out = np.full_like(z, 2, dtype=np.int32)
-    out[z < z1] = 0
-    out[(z >= z1) & (z < z2)] = 1
+def _layer_id_grid(z: np.ndarray, thicknesses: list[float]) -> np.ndarray:
+    L = int(len(thicknesses))
+    if L <= 1:
+        return np.zeros_like(z, dtype=np.int32)
+    bounds = np.cumsum(np.array(thicknesses, dtype=float))  # length L
+    interfaces = bounds[:-1]
+    out = np.full_like(z, L - 1, dtype=np.int32)
+    for li, zi in enumerate(interfaces):
+        out[z < zi] = li
     return out
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Visualize 3-layer laminate PiNN cross-section (x-z at fixed y).")
+    ap = argparse.ArgumentParser(description="Visualize layered laminate PiNN cross-section (x-z at fixed y).")
     ap.add_argument("--model", default="pinn_model.pth", help="Path to trained PINN checkpoint (state_dict).")
     ap.add_argument("--out", default="three_layer_xz.png", help="Output PNG path.")
     ap.add_argument("--show", action="store_true", help="Show interactive window instead of saving.")
     ap.add_argument("--layers", type=int, default=None, help="Hidden layer count used by the checkpoint (auto if omitted).")
     ap.add_argument("--neurons", type=int, default=None, help="Hidden width used by the checkpoint (auto if omitted).")
+    ap.add_argument("--num_layers", type=int, default=int(getattr(config, "NUM_LAYERS", 2)), help="Number of layers (2 or 3).")
 
     ap.add_argument("--E1", type=float, default=10.0)
     ap.add_argument("--E2", type=float, default=1.0)
@@ -46,6 +51,9 @@ def main() -> None:
     ap.add_argument("--nx", type=int, default=151)
     ap.add_argument("--nz", type=int, default=121)
     args = ap.parse_args()
+    config.NUM_LAYERS = int(args.num_layers)
+    if int(config.NUM_LAYERS) not in (2, 3):
+        raise ValueError(f"--num_layers must be 2 or 3, got {config.NUM_LAYERS}")
 
     def _infer_arch(sd: dict) -> tuple[int, int]:
         w0 = sd.get("layers.0.net.0.weight", None)
@@ -67,10 +75,11 @@ def main() -> None:
     config.LAYERS = int(args.layers) if args.layers is not None else inferred_layers
     config.NEURONS = int(args.neurons) if args.neurons is not None else inferred_neurons
 
-    t1 = max(args.t1, 1e-4)
-    t2 = max(args.t2, 1e-4)
-    t3 = max(args.t3, 1e-4)
-    T = t1 + t2 + t3
+    L = int(getattr(config, "NUM_LAYERS", 2))
+    E_list = [float(args.E1), float(args.E2), float(args.E3)][:L]
+    t_list = [float(args.t1), float(args.t2), float(args.t3)][:L]
+    t_list = [max(1e-4, ti) for ti in t_list]
+    T = float(sum(t_list))
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     pinn = model.MultiLayerPINN().to(device)
@@ -87,34 +96,24 @@ def main() -> None:
     X, Z = np.meshgrid(x, z, indexing="xy")  # (nz, nx)
     Y = np.full_like(X, float(args.y))
 
-    pts = np.zeros((X.size, 12), dtype=np.float32)
+    pts = np.zeros((X.size, 3 + 2 * L + 3), dtype=np.float32)
     pts[:, 0] = X.reshape(-1)
     pts[:, 1] = Y.reshape(-1)
     pts[:, 2] = Z.reshape(-1)
-    pts[:, 3] = float(args.E1)
-    pts[:, 4] = float(t1)
-    pts[:, 5] = float(args.E2)
-    pts[:, 6] = float(t2)
-    pts[:, 7] = float(args.E3)
-    pts[:, 8] = float(t3)
-    pts[:, 9] = float(args.r)
-    pts[:, 10] = float(args.mu)
-    pts[:, 11] = float(args.v0)
+    for i, (Ei, ti) in enumerate(zip(E_list, t_list)):
+        pts[:, 3 + 2 * i] = float(Ei)
+        pts[:, 4 + 2 * i] = float(ti)
+    pts[:, 3 + 2 * L] = float(args.r)
+    pts[:, 3 + 2 * L + 1] = float(args.mu)
+    pts[:, 3 + 2 * L + 2] = float(args.v0)
 
     with torch.no_grad():
-        v = pinn(torch.tensor(pts, device=device)).cpu().numpy()
+        x_t = torch.tensor(pts, device=device)
+        v = pinn(x_t)
+        u = physics.decode_u(v, x_t).cpu().numpy()
 
-    # Visualization uses the same decoding convention as train-time metrics (applied pointwise with local E).
-    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
-    e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
-    t_scale = 1.0 if alpha == 0.0 else (float(getattr(config, "H", T)) / float(T)) ** alpha
-
-    # local E depends on layer (piecewise by z)
-    layer_id = _layer_id_grid(Z, t1, t2)
-    E_local = np.where(layer_id == 0, float(args.E1), np.where(layer_id == 1, float(args.E2), float(args.E3))).astype(np.float32)
-
-    uz = v[:, 2].reshape(Z.shape)
-    uz_u = (uz / (E_local**e_pow)) * t_scale
+    layer_id = _layer_id_grid(Z, t_list)
+    uz_u = u[:, 2].reshape(Z.shape)
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5), constrained_layout=True)
 
@@ -125,8 +124,10 @@ def main() -> None:
         aspect="auto",
         cmap="jet",
     )
-    axes[0].axhline(t1, color="w", linewidth=1)
-    axes[0].axhline(t1 + t2, color="w", linewidth=1)
+    z_acc = 0.0
+    for ti in t_list[:-1]:
+        z_acc += float(ti)
+        axes[0].axhline(z_acc, color="w", linewidth=1)
     axes[0].set_title("Predicted $u_z$ (x-z slice) with layer interfaces")
     axes[0].set_xlabel("x")
     axes[0].set_ylabel("z")
@@ -139,14 +140,16 @@ def main() -> None:
         aspect="auto",
         cmap="viridis",
         vmin=0,
-        vmax=2,
+        vmax=max(1, L - 1),
     )
-    axes[1].axhline(t1, color="w", linewidth=1)
-    axes[1].axhline(t1 + t2, color="w", linewidth=1)
-    axes[1].set_title("Layer ID map (0/1/2)")
+    z_acc = 0.0
+    for ti in t_list[:-1]:
+        z_acc += float(ti)
+        axes[1].axhline(z_acc, color="w", linewidth=1)
+    axes[1].set_title("Layer ID map")
     axes[1].set_xlabel("x")
     axes[1].set_ylabel("z")
-    fig.colorbar(im1, ax=axes[1], ticks=[0, 1, 2])
+    fig.colorbar(im1, ax=axes[1])
 
     if args.show:
         plt.show()

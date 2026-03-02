@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import os
 import sys
@@ -23,15 +25,13 @@ import fem_solver
 @dataclass(frozen=True)
 class Case:
     name: str
-    t1: float
-    t2: float
-    t3: float
+    t: tuple[float, ...]
 
 
 def _infer_arch_from_state_dict(sd: dict) -> tuple[int, int]:
     first = sd.get("layers.0.net.0.weight")
     if first is None:
-        raise ValueError("Checkpoint does not look like 3-layer PINN (missing layers.0.net.0.weight).")
+        raise ValueError("Checkpoint does not look like a layered PINN (missing layers.0.net.0.weight).")
     neurons = int(first.shape[0])
     linear_indices = sorted(
         {
@@ -45,13 +45,19 @@ def _infer_arch_from_state_dict(sd: dict) -> tuple[int, int]:
     return hidden_layers, neurons
 
 
-def _parse_cases(spec: str | None, H: float) -> list[Case]:
+def _parse_cases(spec: str | None, H: float, *, num_layers: int) -> list[Case]:
     if not spec:
+        if num_layers == 2:
+            return [
+                Case("balanced", (H / 2.0, H / 2.0)),
+                Case("thick_top", (0.35 * H, 0.65 * H)),
+                Case("thick_bottom", (0.65 * H, 0.35 * H)),
+            ]
         return [
-            Case("balanced", H / 3.0, H / 3.0, H / 3.0),
-            Case("soft_core", 0.2 * H, 0.6 * H, 0.2 * H),
-            Case("thick_top", 0.2 * H, 0.2 * H, 0.6 * H),
-            Case("thick_bottom", 0.6 * H, 0.2 * H, 0.2 * H),
+            Case("balanced", (H / 3.0, H / 3.0, H / 3.0)),
+            Case("soft_core", (0.2 * H, 0.6 * H, 0.2 * H)),
+            Case("thick_top", (0.2 * H, 0.2 * H, 0.6 * H)),
+            Case("thick_bottom", (0.6 * H, 0.2 * H, 0.2 * H)),
         ]
 
     cases: list[Case] = []
@@ -65,10 +71,12 @@ def _parse_cases(spec: str | None, H: float) -> list[Case]:
         else:
             name, vals = f"case{len(cases)}", item
         parts = [p.strip() for p in vals.split(",")]
-        if len(parts) != 3:
-            raise ValueError(f"Invalid case '{item}'. Expected 'name:t1,t2,t3' or 't1,t2,t3'.")
-        t1, t2, t3 = (float(parts[0]), float(parts[1]), float(parts[2]))
-        cases.append(Case(name, t1, t2, t3))
+        if len(parts) != int(num_layers):
+            raise ValueError(
+                f"Invalid case '{item}'. Expected {num_layers} thicknesses like 'name:t1,...,t{num_layers}'."
+            )
+        t = tuple(float(p) for p in parts)
+        cases.append(Case(name, t))
     return cases
 
 
@@ -139,12 +147,13 @@ def main() -> None:
     pinn.eval()
 
     H = float(args.H)
-    cases = _parse_cases(args.cases, H)
+    num_layers = int(getattr(config, "NUM_LAYERS", 2))
+    cases = _parse_cases(args.cases, H, num_layers=num_layers)
     normalized: list[Case] = []
     for c in cases:
-        s = float(c.t1 + c.t2 + c.t3)
+        s = float(sum(c.t))
         scale = H / max(1e-12, s)
-        normalized.append(Case(c.name, c.t1 * scale, c.t2 * scale, c.t3 * scale))
+        normalized.append(Case(c.name, tuple(float(ti) * scale for ti in c.t)))
     cases = normalized
 
     import matplotlib
@@ -157,14 +166,11 @@ def main() -> None:
     y0, y1 = map(float, config.LOAD_PATCH_Y)
 
     for c in cases:
+        E_vals = [float(args.E1), float(args.E2), float(args.E3)][:num_layers]
         cfg = {
             "geometry": {"Lx": float(args.Lx), "Ly": float(args.Ly), "H": H},
             "mesh": {"ne_x": int(args.ne_x), "ne_y": int(args.ne_y), "ne_z": int(args.ne_z)},
-            "layers": [
-                {"t": float(c.t1), "E": float(args.E1), "nu": float(args.nu)},
-                {"t": float(c.t2), "E": float(args.E2), "nu": float(args.nu)},
-                {"t": float(c.t3), "E": float(args.E3), "nu": float(args.nu)},
-            ],
+            "layers": [{"t": float(ti), "E": float(Ei), "nu": float(args.nu)} for Ei, ti in zip(E_vals, c.t)],
             "load_patch": {
                 "pressure": float(args.p0),
                 "x_start": x0 / float(args.Lx),
@@ -180,7 +186,11 @@ def main() -> None:
         u_true = np.array(u_fea, dtype=np.float32)
 
         pts = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1).astype(np.float32)
-        params = np.array([args.E1, c.t1, args.E2, c.t2, args.E3, c.t3, 0.5, 0.3, 1.0], dtype=np.float32)[None, :]
+        params_list = []
+        for Ei, ti in zip(E_vals, c.t):
+            params_list.extend([float(Ei), float(ti)])
+        params_list.extend([0.5, 0.3, 1.0])
+        params = np.array(params_list, dtype=np.float32)[None, :]
         inp = np.concatenate([pts, np.repeat(params, pts.shape[0], axis=0)], axis=1)
         with torch.no_grad():
             x_tensor = torch.tensor(inp, dtype=torch.float32, device=device)
@@ -254,8 +264,10 @@ def main() -> None:
         for ax in axes2:
             ax.set_xlabel("x")
             ax.set_ylabel("z")
-            ax.axhline(c.t1, color="k", lw=1.0)
-            ax.axhline(c.t1 + c.t2, color="k", lw=1.0)
+            z_acc = 0.0
+            for ti in c.t[:-1]:
+                z_acc += float(ti)
+                ax.axhline(z_acc, color="k", lw=1.0)
         fig2.tight_layout()
         out_xz = os.path.join(args.out_dir, f"{c.name}_xz.png")
         fig2.savefig(out_xz, dpi=150)
