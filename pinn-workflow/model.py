@@ -101,6 +101,22 @@ class LayerNet(nn.Module):
             
         u_raw = self.net(x_scaled)
         
+        # --- Output Scaling (Crucial for Magnitude) ---
+        # The Tanh network is stabilized when predicting O(1) values.
+        # We scale the Z-displacement by OUTPUT_SCALE_Z (usually 10.0) 
+        # and apply the physical compliance anchor.
+        scale_pinn = getattr(config, 'OUTPUT_SCALE_Z', 10.0)
+        
+        # Apply compliance logic if enabled
+        if getattr(config, 'THICKNESS_COMPLIANCE_ALPHA', 0.0) > 0.0:
+            from physics import compliance_scale
+            # compliance_scale(E, t) returns 1/E * (H/t)^alpha
+            c_scale = compliance_scale(e_param, t_param)
+            u_raw = u_raw * scale_pinn * c_scale
+        else:
+            # Baseline linear-ish scaling
+            u_raw = u_raw * scale_pinn
+            
         if config.USE_HARD_SIDE_BC:
             x_c = x[:, 0:1]
             y_c = x[:, 1:2]

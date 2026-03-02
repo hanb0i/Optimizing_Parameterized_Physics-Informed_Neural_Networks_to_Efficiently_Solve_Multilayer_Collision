@@ -226,11 +226,16 @@ def compute_loss(model, data, device, weights=None):
         
         z_top = config.get_domain_height(x_coords, y_coords)
         
-        grad_z = torch.autograd.grad(z_top, [x_coords, y_coords], 
-                                     grad_outputs=torch.ones_like(z_top),
-                                     create_graph=True, retain_graph=True)
-        dz_dx = grad_z[0]
-        dz_dy = grad_z[1]
+        try:
+            grad_z = torch.autograd.grad(z_top, [x_coords, y_coords], 
+                                         grad_outputs=torch.ones_like(z_top),
+                                         create_graph=True, retain_graph=True, allow_unused=True)
+            dz_dx = grad_z[0] if grad_z[0] is not None else torch.zeros_like(x_coords)
+            dz_dy = grad_z[1] if grad_z[1] is not None else torch.zeros_like(y_coords)
+        except RuntimeError:
+            # Fallback for FLAT geometry where z_top doesn't depend on x,y
+            dz_dx = torch.zeros_like(x_coords)
+            dz_dy = torch.zeros_like(y_coords)
         
         # Normal vector n = (-dz/dx, -dz/dy, 1)
         n = torch.cat([-dz_dx, -dz_dy, torch.ones_like(dz_dx)], dim=1)

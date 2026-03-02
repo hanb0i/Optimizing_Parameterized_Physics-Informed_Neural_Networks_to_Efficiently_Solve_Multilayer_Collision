@@ -7,8 +7,8 @@ Ly = 1.0
 H = 0.1  # Total height (baseline thickness)
 
 # --- Geometry Configuration ---
-GEOMETRY_TYPE = "DENT" # Options: "FLAT", "DENT"
-DENT_DEPTH = 0.05      # Amplitude of the dent (z_min at center = H - DENT_DEPTH)
+GEOMETRY_TYPE = "FLAT" # Options: "FLAT", "DENT"
+DENT_DEPTH = 0.0      # Amplitude of the dent (z_min at center = H - DENT_DEPTH)
 DENT_WIDTH = 0.2       # Sigma (spread) of the Gaussian
 DENT_CENTER_X = Lx / 2.0
 DENT_CENTER_Y = Ly / 2.0
@@ -72,8 +72,8 @@ IMPACT_VELOCITY_REF = 1.0
 # We apply a simple thickness-aware scaling in the physics layer:
 #   u = (v / E) * (H / t)^alpha
 # where H is the baseline thickness (config.H) and t is the sampled thickness.
-# Set alpha=0.0 to disable.
-THICKNESS_COMPLIANCE_ALPHA = 0.0 # Disabled for Retraining (Phase 1) - Learn Physics Naturally
+THICKNESS_COMPLIANCE_ALPHA = 1.6 # Enabled for high-accuracy anchoring
+E_COMPLIANCE_POWER = 1.0        # Force 1/E relationship
 
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
@@ -88,6 +88,7 @@ p0 = 1.0 # Load magnitude
 # --- Unit-consistent loss scaling ---
 # div(sigma) has units of stress/length; scale by a characteristic length.
 PDE_LENGTH_SCALE = H
+OUTPUT_SCALE_Z = 1.0 # Centered for compliance anchors
 
 # --- Boundary condition handling ---
 # Use hard mask early for shape, then switch to soft BCs for magnitude.
@@ -104,21 +105,21 @@ NEURONS = 64
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
-EPOCHS_ADAM = 600 # Reduced for Sandwich Phase efficiency
-EPOCHS_LBFGS = 0
+EPOCHS_ADAM = 4000 # Full high-accuracy run
+EPOCHS_LBFGS = 500 # Full high-accuracy run
 # SOAP optimizer
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
-    'pde': 5.0,    # Reverted to perfect state (was 100.0)
-    'bc': 0.7,      # Reverted to perfect state (was 1.0)
-    'load': 5.0, # Reverted to perfect state (was 10.0)
-    'energy': 0.0, # Disabled
-    'impact_invariance': 0.0,  # Set >0 only for neutral-parameter mode
-    'impact_contact': 0.0002,   # Reduced to preserve FEA parity in no-supervision mode
-    'friction_coulomb': 0.001,  # Reduced to preserve FEA parity in no-supervision mode
-    'friction_stick': 0.0005,   # Reduced to preserve FEA parity in no-supervision mode
-    'interface_u': 1.0,
+    'pde': 10.0,    # High accuracy baseline
+    'bc': 1.0,      # High accuracy baseline
+    'load': 50.0,   # High accuracy baseline (breaks low-disp trap)
+    'energy': 0.1,  # Minor stabilization
+    'impact_invariance': 0.0,
+    'impact_contact': 0.0002,
+    'friction_coulomb': 0.001,
+    'friction_stick': 0.0005,
+    'interface_u': 0.0, # Single layer focus
     'data': 1.0
 }
 
