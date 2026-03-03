@@ -279,6 +279,7 @@ def main() -> None:
     ap.add_argument("--weight_uz", type=float, default=3.0)
 
     ap.add_argument("--target_pct", type=float, default=5.0)
+    ap.add_argument("--target_pass_rate", type=float, default=0.9, help="Stop when pass-rate exceeds this threshold.")
     ap.add_argument("--max_rounds", type=int, default=4)
     ap.add_argument("--add_worst", type=int, default=5, help="How many worst validation cases to add each round.")
     ap.add_argument("--save", default="pinn_model_two_layers_tuned.pth")
@@ -298,6 +299,8 @@ def main() -> None:
     pinn.train()
 
     thresh = float(args.target_pct) / 100.0
+    target_pass = float(args.target_pass_rate)
+    target_pass = max(0.0, min(target_pass, 1.0))
     if args.train_cases_json:
         train_set = _load_cases_json(str(args.train_cases_json))
     else:
@@ -344,7 +347,9 @@ def main() -> None:
         return torch.cat(x_list, dim=0), torch.cat(u_list, dim=0)
 
     opt = torch.optim.AdamW(pinn.parameters(), lr=float(args.lr))
-    best_score = float("inf")
+    # Track the best model by validation pass-rate first, then by (p90) error.
+    best_pass_both = -1.0
+    best_p90 = float("inf")
     best_sd: dict[str, torch.Tensor] | None = None
 
     for round_idx in range(int(args.max_rounds)):
@@ -409,6 +414,9 @@ def main() -> None:
         worst: list[tuple[float, float, float, Case2L]] = []
         peak_ok = True
         l2_ok = True
+        pass_peak = 0
+        pass_l2 = 0
+        pass_both = 0
         for i, c in enumerate(val_set):
             peak_rel, l2_rel = _eval_case(
                 pinn,
@@ -423,6 +431,9 @@ def main() -> None:
             worst.append((max(peak_rel, l2_rel), peak_rel, l2_rel, c))
             peak_ok = peak_ok and (peak_rel <= thresh)
             l2_ok = l2_ok and (l2_rel <= thresh)
+            pass_peak += int(peak_rel <= thresh)
+            pass_l2 += int(l2_rel <= thresh)
+            pass_both += int((peak_rel <= thresh) and (l2_rel <= thresh))
             print(
                 f"val{i:02d}: H={c.H:.4f} t1/T={c.frac:.2f} E1={c.E1:.2f} E2={c.E2:.2f} | "
                 f"peak_rel={peak_rel*100:.2f}% l2_rel={l2_rel*100:.2f}%"
@@ -431,26 +442,44 @@ def main() -> None:
         worst.sort(key=lambda t: t[0], reverse=True)
         max_peak = max(w[1] for w in worst) if worst else float("nan")
         max_l2 = max(w[2] for w in worst) if worst else float("nan")
+        n_val = max(1, len(val_set))
+        pass_rate_peak = float(pass_peak) / float(n_val)
+        pass_rate_l2 = float(pass_l2) / float(n_val)
+        pass_rate_both = float(pass_both) / float(n_val)
+        p90 = float(np.quantile([w[0] for w in worst], 0.9)) if worst else float("nan")
         print(
             f"\nValidation worst peak_rel={max_peak*100:.2f}% l2_rel={max_l2*100:.2f}% "
             f"(target {args.target_pct:.2f}%)"
         )
+        print(
+            f"Validation pass-rate (<= {args.target_pct:.2f}%): "
+            f"peak={pass_rate_peak*100:.1f}% l2={pass_rate_l2*100:.1f}% both={pass_rate_both*100:.1f}% | "
+            f"p90(max_err)={p90*100:.2f}%"
+        )
 
-        score = max(max_peak, max_l2)
-        if score < best_score:
-            best_score = float(score)
+        improved = (pass_rate_both > best_pass_both) or (pass_rate_both == best_pass_both and p90 < best_p90)
+        if improved:
+            best_pass_both = float(pass_rate_both)
+            best_p90 = float(p90)
             best_sd = {k: v.detach().cpu().clone() for k, v in pinn.state_dict().items()}
             torch.save(pinn.state_dict(), str(args.save))
-            print(f"New best: saved {args.save} (worst={best_score*100:.2f}%)")
+            print(
+                f"New best: saved {args.save} (both_pass={best_pass_both*100:.1f}% p90={best_p90*100:.2f}%)"
+            )
         else:
             # Revert to the best-seen checkpoint to prevent drift.
             if best_sd is not None:
                 pinn.load_state_dict(best_sd, strict=False)
                 pinn.to(device)
-                print(f"Reverted to best checkpoint (worst={best_score*100:.2f}%)")
+                print(
+                    f"Reverted to best checkpoint (both_pass={best_pass_both*100:.1f}% p90={best_p90*100:.2f}%)"
+                )
 
-        if peak_ok and l2_ok:
-            print(f"Target reached: {args.target_pct:.2f}% on all {len(val_set)} validation cases.")
+        if pass_rate_both >= target_pass:
+            print(
+                f"Target reached: both_pass={pass_rate_both*100:.1f}% >= {target_pass*100:.1f}% "
+                f"at <= {args.target_pct:.2f}% on {len(val_set)} validation cases."
+            )
             return
 
         # Active learning: add the worst failing offenders to training set.
@@ -474,13 +503,13 @@ def main() -> None:
             )
 
         # Keep the on-disk checkpoint as the best-seen model.
-        print(f"Round complete: added {added} cases (best worst={best_score*100:.2f}%)")
+        print(f"Round complete: added {added} cases (best both_pass={best_pass_both*100:.1f}% p90={best_p90*100:.2f}%)")
 
     # Ensure the saved checkpoint is the best one we found.
     if best_sd is not None:
         pinn.load_state_dict(best_sd, strict=False)
         torch.save(pinn.state_dict(), str(args.save))
-    print(f"Max rounds reached: best saved to {args.save} (best worst={best_score*100:.2f}%)")
+    print(f"Max rounds reached: best saved to {args.save} (best both_pass={best_pass_both*100:.1f}% p90={best_p90*100:.2f}%)")
 
 
 if __name__ == "__main__":
