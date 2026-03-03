@@ -120,9 +120,19 @@ def _build_case_dataset(
     *,
     impact_seed: int,
     randomize_impact_params: bool,
+    dataset_mode: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     X, Y, Z = np.meshgrid(x_nodes, y_nodes, z_nodes, indexing="ij")
-    pts = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1).astype(np.float32, copy=False)
+    if dataset_mode == "top":
+        # Only keep top-surface nodes (z = H) to directly optimize the benchmark metric.
+        Xt = X[:, :, -1]
+        Yt = Y[:, :, -1]
+        Zt = Z[:, :, -1]
+        pts = np.stack([Xt.ravel(), Yt.ravel(), Zt.ravel()], axis=1).astype(np.float32, copy=False)
+        u_out = np.asarray(u_grid, dtype=np.float32)[:, :, -1, :].reshape(-1, 3)
+    else:
+        pts = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1).astype(np.float32, copy=False)
+        u_out = np.asarray(u_grid, dtype=np.float32).reshape(-1, 3)
 
     if randomize_impact_params:
         rng = np.random.default_rng(int(impact_seed) & 0xFFFFFFFF)
@@ -146,7 +156,6 @@ def _build_case_dataset(
     params_rep = np.repeat(params, pts.shape[0], axis=0)
     x_in = np.concatenate([pts, params_rep, r, mu, v0], axis=1).astype(np.float32, copy=False)
 
-    u_out = np.asarray(u_grid, dtype=np.float32).reshape(-1, 3)
     return x_in, u_out
 
 
@@ -269,6 +278,7 @@ def main() -> None:
     ap.add_argument("--val_cases_json", default=None, help="Optional JSON list of validation cases.")
     ap.add_argument("--include_extremes", type=int, default=1, help="Include min/max cases in the training set.")
     ap.add_argument("--randomize_impact_params", type=int, default=1)
+    ap.add_argument("--dataset_mode", default="full", choices=["full", "top"], help="Use full 3D nodes or only top surface nodes.")
 
     ap.add_argument("--epochs", type=int, default=2000)
     ap.add_argument("--batch_size", type=int, default=4096)
@@ -294,6 +304,7 @@ def main() -> None:
     rng = np.random.default_rng(int(args.seed))
     use_soft_mask = bool(int(args.use_soft_mask))
     cache_dir = str(args.cache_dir).strip() or None
+    dataset_mode = str(args.dataset_mode).lower().strip()
 
     pinn = model.MultiLayerPINN().to(device)
     pinn.train()
@@ -337,6 +348,7 @@ def main() -> None:
                     c,
                     impact_seed=seed,
                     randomize_impact_params=bool(int(args.randomize_impact_params)),
+                    dataset_mode=dataset_mode,
                 )
                 cached = (torch.tensor(x_in, dtype=torch.float32), torch.tensor(u_out, dtype=torch.float32))
                 case_data_cache[key] = cached
@@ -398,8 +410,13 @@ def main() -> None:
                 if w_patch > 0.0:
                     w = w + w_patch * patch_top.to(dtype=xb.dtype)
 
-                se = (err[:, 0:1] ** 2) + (err[:, 1:2] ** 2) + (w_uz * (err[:, 2:3] ** 2))
-                loss = torch.mean(w * se)
+                if dataset_mode == "top":
+                    # Directly optimize u_z on the top surface (benchmark metric).
+                    # Dataset is already top-only; keep patch emphasis.
+                    loss = torch.mean(w * (err[:, 2:3] ** 2))
+                else:
+                    se = (err[:, 0:1] ** 2) + (err[:, 1:2] ** 2) + (w_uz * (err[:, 2:3] ** 2))
+                    loss = torch.mean(w * se)
                 loss.backward()
                 opt.step()
 
