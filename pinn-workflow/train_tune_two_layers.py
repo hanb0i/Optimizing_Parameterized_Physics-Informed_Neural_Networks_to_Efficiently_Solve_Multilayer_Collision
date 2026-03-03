@@ -5,6 +5,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
+import json
 
 import numpy as np
 import torch
@@ -180,6 +181,30 @@ def _sample_cases(
         out.append(Case2L(H=H, t1=t1, t2=t2, E1=E1, E2=E2))
     return out[: int(n)]
 
+def _load_cases_json(path: str) -> list[Case2L]:
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    if not isinstance(raw, list):
+        raise ValueError("cases json must be a list of objects")
+    out: list[Case2L] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError(f"case[{i}] must be an object")
+        H = float(item.get("H"))
+        if "t1" in item and "t2" in item:
+            t1 = float(item["t1"])
+            t2 = float(item["t2"])
+        elif "frac" in item:
+            f = float(item["frac"])
+            t1 = float(H * f)
+            t2 = float(H - t1)
+        else:
+            raise ValueError(f"case[{i}] must include (t1,t2) or frac")
+        E1 = float(item.get("E1"))
+        E2 = float(item.get("E2"))
+        out.append(Case2L(H=H, t1=t1, t2=t2, E1=E1, E2=E2))
+    return out
+
 
 def _eval_case(
     pinn: torch.nn.Module,
@@ -240,6 +265,8 @@ def main() -> None:
 
     ap.add_argument("--train_cases", type=int, default=60)
     ap.add_argument("--val_cases", type=int, default=20)
+    ap.add_argument("--train_cases_json", default=None, help="Optional JSON list of training cases.")
+    ap.add_argument("--val_cases_json", default=None, help="Optional JSON list of validation cases.")
     ap.add_argument("--include_extremes", type=int, default=1, help="Include min/max cases in the training set.")
     ap.add_argument("--randomize_impact_params", type=int, default=1)
 
@@ -271,8 +298,14 @@ def main() -> None:
     pinn.train()
 
     thresh = float(args.target_pct) / 100.0
-    train_set = _sample_cases(rng, int(args.train_cases), include_extremes=bool(int(args.include_extremes)))
-    val_set = _sample_cases(rng, int(args.val_cases), include_extremes=False)
+    if args.train_cases_json:
+        train_set = _load_cases_json(str(args.train_cases_json))
+    else:
+        train_set = _sample_cases(rng, int(args.train_cases), include_extremes=bool(int(args.include_extremes)))
+    if args.val_cases_json:
+        val_set = _load_cases_json(str(args.val_cases_json))
+    else:
+        val_set = _sample_cases(rng, int(args.val_cases), include_extremes=False)
 
     case_data_cache: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
 
