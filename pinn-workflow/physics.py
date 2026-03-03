@@ -70,12 +70,22 @@ def decode_u(v: torch.Tensor, x: torch.Tensor, *, E_override: torch.Tensor | Non
     - none: u=v
     - local: u=v/E_local (or E_override)
     - global: u=v/E_eff (or E_override)
+    - scaled_eff: u = v * compliance_scale(E_eff, t_total)
+    - scaled_local: u = v * compliance_scale(E_local, t_total)
     """
     # Mixed-form networks output [u(3), sigma_voigt(6)].
     if v.shape[1] > 3:
         v = v[:, 0:3]
     mode = str(getattr(config, "DISPLACEMENT_DECODE_MODE", "none")).lower().strip()
-    if mode in {"none", "identity", "u"}:
+    if mode in {"scaled_eff", "scaled", "scaled_global", "scaled_e_eff"}:
+        E = E_override if E_override is not None else _E_eff(x)
+        t_total = _total_thickness(x)
+        u = v * compliance_scale(E, t_total)
+    elif mode in {"scaled_local"}:
+        E = E_override if E_override is not None else _select_E_local(x)
+        t_total = _total_thickness(x)
+        u = v * compliance_scale(E, t_total)
+    elif mode in {"none", "identity", "u"}:
         u = v
     elif mode in {"global", "eff", "e_eff", "avg"}:
         E = E_override if E_override is not None else _E_eff(x)
@@ -104,10 +114,20 @@ def encode_v(u: torch.Tensor, x: torch.Tensor, *, E_override: torch.Tensor | Non
       v = u              (mode="none")
       v = u * E_eff      (mode="global")
       v = u * E_local    (mode="local")
+      v = u / compliance_scale(E_eff, t_total)   (mode="scaled_eff")
+      v = u / compliance_scale(E_local, t_total) (mode="scaled_local")
     """
     if u.shape[1] > 3:
         u = u[:, 0:3]
     mode = str(getattr(config, "DISPLACEMENT_DECODE_MODE", "none")).lower().strip()
+    if mode in {"scaled_eff", "scaled", "scaled_global", "scaled_e_eff"}:
+        E = E_override if E_override is not None else _E_eff(x)
+        t_total = _total_thickness(x)
+        return u / torch.clamp(compliance_scale(E, t_total), min=1e-12)
+    if mode in {"scaled_local"}:
+        E = E_override if E_override is not None else _select_E_local(x)
+        t_total = _total_thickness(x)
+        return u / torch.clamp(compliance_scale(E, t_total), min=1e-12)
     if mode in {"none", "identity", "u"}:
         return u
     if mode in {"global", "eff", "e_eff", "avg"}:

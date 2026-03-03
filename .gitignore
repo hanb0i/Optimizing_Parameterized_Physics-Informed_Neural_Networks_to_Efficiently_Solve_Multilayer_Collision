@@ -5,3 +5,8 @@ third_party/
 impact_pipeline_outputs/
 __pycache__/
 *.pyc
+
+# Training artifacts / caches
+*.pth
+loss_history*.npy
+pinn-workflow/fea_cache/

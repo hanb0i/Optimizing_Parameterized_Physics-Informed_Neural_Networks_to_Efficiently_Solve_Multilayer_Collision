@@ -98,10 +98,11 @@ RESTITUTION_REF = 0.5
 FRICTION_REF = 0.3
 IMPACT_VELOCITY_REF = 1.0
 
-# Inference-time compliance correction for E:
-# Use u = v / E^p instead of v / E (p=1.0). This can help slightly reduce
-# high-E under/over-shoot without retraining.
-E_COMPLIANCE_POWER = 0.973
+# Parametric compliance scaling exponents.
+# For plate-like bending problems, u often scales ~ 1/E and ~ 1/t^3.
+# These exponents are used by `physics.decode_u` when `DISPLACEMENT_DECODE_MODE`
+# is set to a `scaled_*` mode.
+E_COMPLIANCE_POWER = 1.0
 
 # --- Parametric compliance scaling ---
 # Many plate-like problems scale strongly with thickness (often ~ 1/t^3).
@@ -109,12 +110,15 @@ E_COMPLIANCE_POWER = 0.973
 #   u = (v / E) * (H / t)^alpha
 # where H is the baseline thickness (config.H) and t is the sampled thickness.
 # Set alpha=0.0 to disable.
-THICKNESS_COMPLIANCE_ALPHA = 1.234
+THICKNESS_COMPLIANCE_ALPHA = 3.0
 
 # How to interpret the network output when forming displacement u:
-# - "local": u = v / E_local (legacy scaling; can cancel stiffness in layered E)
-# - "none":  u = v (recommended for layered FEM parity)
-DISPLACEMENT_DECODE_MODE = "none"
+# - "none":        u = v
+# - "local":       u = v / E_local
+# - "global":      u = v / E_eff
+# - "scaled_eff":  u = v * compliance_scale(E_eff, t_total)   (recommended for parametric generalization)
+# - "scaled_local":u = v * compliance_scale(E_local, t_total)
+DISPLACEMENT_DECODE_MODE = "scaled_eff"
 
 # When True, use a mixed (first-order) formulation that predicts both displacement and stress:
 # output = [u_x,u_y,u_z, s_xx,s_yy,s_zz,s_xy,s_xz,s_yz]

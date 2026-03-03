@@ -355,12 +355,15 @@ def load_fem_supervision_data(n_points_per_e=None, e_values=None, thickness_valu
             return
         indices = np.random.choice(total_points, size=min(int(n_points_per_e), total_points), replace=False)
 
+        # FEA supervision is quasi-static and does not depend on restitution/friction/impact_velocity.
+        # To make the surrogate robust across the full parameter ranges, randomize these "impact"
+        # parameters during supervision so the network learns invariance.
         r_min, r_max = _get_restitution_range()
         mu_min, mu_max = _get_friction_range()
         v0_min, v0_max = _get_impact_velocity_range()
-        restitution = np.ones(len(indices), dtype=np.float32) * (0.5 * (r_min + r_max))
-        friction = np.ones(len(indices), dtype=np.float32) * (0.5 * (mu_min + mu_max))
-        impact_velocity = np.ones(len(indices), dtype=np.float32) * (0.5 * (v0_min + v0_max))
+        restitution = (np.random.rand(len(indices)).astype(np.float32) * (r_max - r_min) + r_min).astype(np.float32)
+        friction = (np.random.rand(len(indices)).astype(np.float32) * (mu_max - mu_min) + mu_min).astype(np.float32)
+        impact_velocity = (np.random.rand(len(indices)).astype(np.float32) * (v0_max - v0_min) + v0_min).astype(np.float32)
 
         cols = [
             x_flat[indices].astype(np.float32),
@@ -1004,7 +1007,8 @@ def get_data(prev_data=None, residuals=None):
             zte = T_te
             top_load_energy = _assemble_input(torch.cat([xte, yte, zte], dim=1), params_te)
         else:
-            top_load_energy = top_load[:0]
+            # `top_load` is defined later; use an empty tensor with the correct shape now.
+            top_load_energy = interior[:0]
     else:
         interior_energy = None
         top_load_energy = None
