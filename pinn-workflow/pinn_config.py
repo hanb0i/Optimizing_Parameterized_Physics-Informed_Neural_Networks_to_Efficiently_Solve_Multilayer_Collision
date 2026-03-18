@@ -41,6 +41,8 @@ IMPACT_VELOCITY_REF = 1.0
 # Use u = v / E^p instead of v / E (p=1.0). This can help slightly reduce
 # high-E under/over-shoot without retraining.
 E_COMPLIANCE_POWER = 0.973
+# Global compliance calibration applied at evaluation/inference time.
+DISPLACEMENT_COMPLIANCE_SCALE = 1.26
 
 # --- Parametric compliance scaling ---
 # Many plate-like problems scale strongly with thickness (often ~ 1/t^3).

@@ -36,7 +36,8 @@ def _load_model(model_path, device):
 def _u_from_v(v, E1_val, E2_val):
     e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
     e_scale = 0.5 * (float(E1_val) + float(E2_val))
-    return v / (e_scale ** e_pow)
+    scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
+    return scale * v / (e_scale ** e_pow)
 
 
 def _ref_params():

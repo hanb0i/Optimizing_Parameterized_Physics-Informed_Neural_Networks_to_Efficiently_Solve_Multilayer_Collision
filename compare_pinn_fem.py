@@ -16,7 +16,8 @@ import model
 def _u_from_v(v, pts):
     e_scale = 0.5 * (pts[:, 3:4] + pts[:, 4:5])
     e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
-    return v / (e_scale ** e_pow)
+    scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
+    return scale * v / (e_scale ** e_pow)
 
 
 def main():

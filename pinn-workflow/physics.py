@@ -11,9 +11,10 @@ def compliance_scale(E, t=None):
     h_ref = float(getattr(config, "H", 1.0))
     alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
     e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
+    disp_scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
     if alpha == 0.0:
-        return 1.0 / (e_safe ** e_pow)
-    return (1.0 / (e_safe ** e_pow)) * (h_ref / t_safe) ** alpha
+        return disp_scale / (e_safe ** e_pow)
+    return disp_scale * (1.0 / (e_safe ** e_pow)) * (h_ref / t_safe) ** alpha
 
 def v_to_u(v, E, t=None):
     return v * compliance_scale(E, t)
