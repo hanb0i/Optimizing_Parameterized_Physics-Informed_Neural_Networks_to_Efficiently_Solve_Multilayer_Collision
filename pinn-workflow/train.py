@@ -13,8 +13,8 @@ import physics
 import matplotlib.pyplot as plt
 
 def _u_from_v(v, pts):
-    e_scale = 0.5 * (pts[:, 3:4] + pts[:, 4:5])
-    t_scale = pts[:, 5:6]
+    e_scale = 0.5 * (pts[:, 3:4] + pts[:, 5:6])
+    t_scale = pts[:, 4:5] + pts[:, 6:7]
     e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
     alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
     scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
@@ -108,14 +108,15 @@ def train():
         pts_fea = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
         e1_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
         e2_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
-        t_ones = np.ones((pts_fea.shape[0], 1)) * thickness_ref
+        t1_ones = np.ones((pts_fea.shape[0], 1)) * (0.5 * thickness_ref)
+        t2_ones = np.ones((pts_fea.shape[0], 1)) * (0.5 * thickness_ref)
         r_ref = float(getattr(config, "RESTITUTION_REF", 0.5))
         mu_ref = float(getattr(config, "FRICTION_REF", 0.3))
         v0_ref = float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
         r_ones = np.ones((pts_fea.shape[0], 1)) * r_ref
         mu_ones = np.ones((pts_fea.shape[0], 1)) * mu_ref
         v0_ones = np.ones((pts_fea.shape[0], 1)) * v0_ref
-        pts_fea = np.hstack([pts_fea, e1_ones, e2_ones, t_ones, r_ones, mu_ones, v0_ones])
+        pts_fea = np.hstack([pts_fea, e1_ones, t1_ones, e2_ones, t2_ones, r_ones, mu_ones, v0_ones])
         pts_fea_tensor = torch.tensor(pts_fea, dtype=torch.float32).to(device)
         u_fea_flat = U_fea.reshape(-1, 3)
         

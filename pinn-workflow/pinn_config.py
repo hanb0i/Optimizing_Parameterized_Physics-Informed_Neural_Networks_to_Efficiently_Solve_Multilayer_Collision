@@ -17,12 +17,13 @@ E_vals = [1.0] # Normalized
 nu_vals = [0.3]
 # Parameterized PINN settings (do not alter baseline values)
 E_RANGE = [1.0, 10.0]
-THICKNESS_RANGE = [0.05, 0.15]
+T1_RANGE = [0.02, 0.10]
+T2_RANGE = [0.02, 0.10]
 RESTITUTION_RANGE = [0.5, 0.5]
 FRICTION_RANGE = [0.3, 0.3]
 IMPACT_VELOCITY_RANGE = [1.0, 1.0]
-# Params: [E1, E2, t, r, mu, v0]
-PARAM_DIM = 6
+# Params: [E1, t1, E2, t2, r, mu, v0]
+PARAM_DIM = 7
 
 # Optional: explicit E sweep values for `verify_parametric_pinn.py`.
 # If not set, it uses `np.linspace(E_RANGE[0], E_RANGE[1], PINN_VERIFY_E_STEPS)`.
@@ -134,7 +135,8 @@ FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 # Hybrid / Parametric Training Data
 N_DATA_POINTS = 9000
 DATA_E_VALUES = [1.0, 5.0, 10.0]
-DATA_THICKNESS_VALUES = [0.05, 0.10, 0.15]
+DATA_T1_VALUES = [0.05, 0.08]
+DATA_T2_VALUES = [0.05, 0.08]
 USE_SUPERVISION_DATA = True
 
 # --- Explicit impact/friction physics controls ---

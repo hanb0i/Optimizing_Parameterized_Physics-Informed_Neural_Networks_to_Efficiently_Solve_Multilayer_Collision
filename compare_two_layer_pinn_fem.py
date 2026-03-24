@@ -23,8 +23,8 @@ import fem_solver
 
 
 def _u_from_v(v, pts):
-    e_scale = 0.5 * (pts[:, 3:4] + pts[:, 4:5])
-    t_scale = pts[:, 5:6]
+    e_scale = 0.5 * (pts[:, 3:4] + pts[:, 5:6])
+    t_scale = pts[:, 4:5] + pts[:, 6:7]
     e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
     alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
     scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
@@ -50,7 +50,8 @@ def _load_pinn(device):
     return pinn
 
 
-def _run_two_layer_fea(e1, e2, thickness, ne_x, ne_y, ne_z):
+def _run_two_layer_fea(e1, e2, t1, t2, ne_x, ne_y, ne_z):
+    thickness = float(t1) + float(t2)
     cfg = {
         "geometry": {
             "Lx": config.Lx,
@@ -62,7 +63,7 @@ def _run_two_layer_fea(e1, e2, thickness, ne_x, ne_y, ne_z):
         },
         "material": {
             "E_layers": [float(e1), float(e2)],
-            "t_layers": [0.5 * float(thickness), 0.5 * float(thickness)],
+            "t_layers": [float(t1), float(t2)],
             "nu": config.nu_vals[0],
         },
         "load_patch": {
@@ -76,7 +77,7 @@ def _run_two_layer_fea(e1, e2, thickness, ne_x, ne_y, ne_z):
     return fem_solver.solve_two_layer_fem(cfg)
 
 
-def _predict_pinn(pinn, device, x_flat, y_flat, z_flat, e1, e2, thickness):
+def _predict_pinn(pinn, device, x_flat, y_flat, z_flat, e1, e2, t1, t2):
     r_ref, mu_ref, v0_ref = _ref_params()
     pts = np.stack(
         [
@@ -84,8 +85,9 @@ def _predict_pinn(pinn, device, x_flat, y_flat, z_flat, e1, e2, thickness):
             y_flat,
             z_flat,
             np.full_like(x_flat, float(e1)),
+            np.full_like(x_flat, float(t1)),
             np.full_like(x_flat, float(e2)),
-            np.full_like(x_flat, float(thickness)),
+            np.full_like(x_flat, float(t2)),
             np.full_like(x_flat, r_ref),
             np.full_like(x_flat, mu_ref),
             np.full_like(x_flat, v0_ref),
@@ -97,8 +99,9 @@ def _predict_pinn(pinn, device, x_flat, y_flat, z_flat, e1, e2, thickness):
     return _u_from_v(v, pts)
 
 
-def _plot_case(case_name, output_dir, pinn, device, e1, e2, thickness):
-    x_nodes, y_nodes, z_nodes, u_fea = _run_two_layer_fea(e1, e2, thickness, ne_x=10, ne_y=10, ne_z=4)
+def _plot_case(case_name, output_dir, pinn, device, e1, e2, t1, t2):
+    thickness = float(t1) + float(t2)
+    x_nodes, y_nodes, z_nodes, u_fea = _run_two_layer_fea(e1, e2, t1, t2, ne_x=10, ne_y=10, ne_z=4)
     x_nodes = np.array(x_nodes)
     y_nodes = np.array(y_nodes)
     z_nodes = np.array(z_nodes)
@@ -113,7 +116,8 @@ def _plot_case(case_name, output_dir, pinn, device, e1, e2, thickness):
         top_z,
         e1,
         e2,
-        thickness,
+        t1,
+        t2,
     ).reshape(len(x_nodes), len(y_nodes), 3)
 
     u_z_fea_top = u_fea[:, :, -1, 2]
@@ -161,7 +165,8 @@ def _plot_case(case_name, output_dir, pinn, device, e1, e2, thickness):
         z_cross.ravel(),
         e1,
         e2,
-        thickness,
+        t1,
+        t2,
     ).reshape(len(x_nodes), len(z_nodes), 3)
 
     u_z_fea_cross = u_fea[:, mid_y_idx, :, 2]
@@ -197,14 +202,14 @@ def _plot_case(case_name, output_dir, pinn, device, e1, e2, thickness):
     return mae_pct
 
 
-def _plot_sweep(output_dir, pinn, device, thickness):
+def _plot_sweep(output_dir, pinn, device, t1, t2):
     e_values = [float(v) for v in getattr(config, "DATA_E_VALUES", [1.0, 5.0, 10.0])]
     mae_pct_grid = np.zeros((len(e_values), len(e_values)))
 
     fea_cache = {}
     for e1 in e_values:
         for e2 in e_values:
-            x_nodes, y_nodes, z_nodes, u_fea = _run_two_layer_fea(e1, e2, thickness, ne_x=8, ne_y=8, ne_z=4)
+            x_nodes, y_nodes, z_nodes, u_fea = _run_two_layer_fea(e1, e2, t1, t2, ne_x=8, ne_y=8, ne_z=4)
             fea_cache[(e1, e2)] = (np.array(x_nodes), np.array(y_nodes), np.array(z_nodes), np.array(u_fea))
 
     for row_idx, e1 in enumerate(e_values):
@@ -216,10 +221,11 @@ def _plot_sweep(output_dir, pinn, device, thickness):
                 device,
                 x_grid.ravel(),
                 y_grid.ravel(),
-                np.full(x_grid.size, thickness),
+                np.full(x_grid.size, float(t1) + float(t2)),
                 e1,
                 e2,
-                thickness,
+                t1,
+                t2,
             ).reshape(len(x_nodes), len(y_nodes), 3)
             u_z_fea_top = u_fea[:, :, -1, 2]
             u_z_pinn_top = u_pinn_top[:, :, 2]
@@ -236,7 +242,7 @@ def _plot_sweep(output_dir, pinn, device, thickness):
     ax.set_yticklabels([f"{val:g}" for val in e_values])
     ax.set_xlabel("E2")
     ax.set_ylabel("E1")
-    ax.set_title(f"Two-Layer PINN vs Two-Layer FEA\nTop-Surface MAE at t={thickness}")
+    ax.set_title(f"Two-Layer PINN vs Two-Layer FEA\nTop-Surface MAE at t1={t1}, t2={t2}")
 
     for row_idx in range(len(e_values)):
         for col_idx in range(len(e_values)):
@@ -251,7 +257,7 @@ def _plot_sweep(output_dir, pinn, device, thickness):
             )
 
     fig.tight_layout()
-    fig.savefig(os.path.join(output_dir, f"two_layer_sweep_t{thickness:.2f}.png"), dpi=160)
+    fig.savefig(os.path.join(output_dir, f"two_layer_sweep_t1{t1:.2f}_t2{t2:.2f}.png"), dpi=160)
     plt.close(fig)
     return e_values, mae_pct_grid
 
@@ -271,15 +277,20 @@ def main():
 
     pinn = _load_pinn(device)
 
+    t1_values = [float(v) for v in getattr(config, "DATA_T1_VALUES", [float(getattr(config, "H", 0.1)) * 0.5])]
+    t2_values = [float(v) for v in getattr(config, "DATA_T2_VALUES", [float(getattr(config, "H", 0.1)) * 0.5])]
+    t1_min, t1_max = min(t1_values), max(t1_values)
+    t2_min, t2_max = min(t2_values), max(t2_values)
+
     representative_cases = [
-        ("two_layer_soft_bottom", 1.0, 10.0, float(getattr(config, "H", 0.1))),
-        ("two_layer_soft_top", 10.0, 1.0, float(getattr(config, "H", 0.1))),
+        ("two_layer_soft_bottom", 1.0, 10.0, t1_min, t2_max),
+        ("two_layer_soft_top", 10.0, 1.0, t1_max, t2_min),
     ]
-    for case_name, e1, e2, thickness in representative_cases:
-        mae_pct = _plot_case(case_name, output_dir, pinn, device, e1, e2, thickness)
+    for case_name, e1, e2, t1_val, t2_val in representative_cases:
+        mae_pct = _plot_case(case_name, output_dir, pinn, device, e1, e2, t1_val, t2_val)
         print(f"{case_name}: top-surface MAE={mae_pct:.2f}%")
 
-    _, mae_pct_grid = _plot_sweep(output_dir, pinn, device, float(getattr(config, "H", 0.1)))
+    _, mae_pct_grid = _plot_sweep(output_dir, pinn, device, t1_min, t2_min)
     print(f"Two-layer sweep mean MAE={np.mean(mae_pct_grid):.2f}%")
     print(f"Two-layer sweep worst MAE={np.max(mae_pct_grid):.2f}%")
     print(f"Saved outputs to {output_dir}")

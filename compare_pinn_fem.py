@@ -14,8 +14,8 @@ import pinn_config as config  # noqa: F401
 import model
 
 def _u_from_v(v, pts):
-    e_scale = 0.5 * (pts[:, 3:4] + pts[:, 4:5])
-    t_scale = pts[:, 5:6]
+    e_scale = 0.5 * (pts[:, 3:4] + pts[:, 5:6])
+    t_scale = pts[:, 4:5] + pts[:, 6:7]
     e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
     alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
     scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
@@ -59,11 +59,13 @@ def main():
     pts = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
     e1_ones = np.ones((pts.shape[0], 1)) * config.E_vals[0]
     e2_ones = np.ones((pts.shape[0], 1)) * config.E_vals[0]
-    t_ones = np.ones((pts.shape[0], 1)) * float(np.max(Z_fea))
+    thickness_ref = float(np.max(Z_fea))
+    t1_ones = np.ones((pts.shape[0], 1)) * (0.5 * thickness_ref)
+    t2_ones = np.ones((pts.shape[0], 1)) * (0.5 * thickness_ref)
     r_ones = np.ones((pts.shape[0], 1)) * float(getattr(config, "RESTITUTION_REF", 0.5))
     mu_ones = np.ones((pts.shape[0], 1)) * float(getattr(config, "FRICTION_REF", 0.3))
     v0_ones = np.ones((pts.shape[0], 1)) * float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
-    pts = np.hstack([pts, e1_ones, e2_ones, t_ones, r_ones, mu_ones, v0_ones])
+    pts = np.hstack([pts, e1_ones, t1_ones, e2_ones, t2_ones, r_ones, mu_ones, v0_ones])
     with torch.no_grad():
         pts_tensor = torch.tensor(pts, dtype=torch.float32).to(device)
         v_pinn_flat = pinn(pts_tensor, 0).cpu().numpy()
