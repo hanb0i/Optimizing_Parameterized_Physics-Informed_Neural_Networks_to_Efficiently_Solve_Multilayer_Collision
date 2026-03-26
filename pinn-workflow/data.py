@@ -127,10 +127,17 @@ def load_fem_supervision_data(n_points_per_e=None, e_values=None, t1_values=None
             thickness = float(t1) + float(t2)
             for E1_val in e_values:
                 for E2_val in e_values:
-                    print(f\"  Generating FEM supervision for E1={E1_val}, E2={E2_val}, t1={t1}, t2={t2}...\")
+                    print(f"  Generating FEM supervision for E1={E1_val}, E2={E2_val}, t1={t1}, t2={t2}...")
 
                     cfg = {
-                        'geometry': {'Lx': config.Lx, 'Ly': config.Ly, 'H': thickness},
+                        'geometry': {
+                            'Lx': config.Lx,
+                            'Ly': config.Ly,
+                            'H': thickness,
+                            'ne_x': int(getattr(config, "FEM_NE_X", 30)),
+                            'ne_y': int(getattr(config, "FEM_NE_Y", 30)),
+                            'ne_z': int(getattr(config, "FEM_NE_Z", 10)),
+                        },
                         'material': {
                             'E_layers': [E1_val, E2_val],
                             't_layers': [float(t1), float(t2)],
@@ -146,21 +153,21 @@ def load_fem_supervision_data(n_points_per_e=None, e_values=None, t1_values=None
                     }
                     x_nodes, y_nodes, z_nodes, u_grid = fem_solver.solve_two_layer_fem(cfg)
 
-            X, Y, Z = np.meshgrid(x_nodes, y_nodes, z_nodes, indexing='ij')
-            x_flat = X.flatten()
-            y_flat = Y.flatten()
-            z_flat = Z.flatten()
-            u_flat = u_grid.reshape(-1, 3)
+                    X, Y, Z = np.meshgrid(x_nodes, y_nodes, z_nodes, indexing='ij')
+                    x_flat = X.flatten()
+                    y_flat = Y.flatten()
+                    z_flat = Z.flatten()
+                    u_flat = u_grid.reshape(-1, 3)
 
-            total_points = len(x_flat)
-            indices = np.random.choice(total_points, size=min(n_points_per_e, total_points), replace=False)
+                    total_points = len(x_flat)
+                    indices = np.random.choice(total_points, size=min(n_points_per_e, total_points), replace=False)
 
-            r_min, r_max = _get_restitution_range()
-            mu_min, mu_max = _get_friction_range()
-            v0_min, v0_max = _get_impact_velocity_range()
-            restitution = np.ones(len(indices)) * (0.5 * (r_min + r_max))
-            friction = np.ones(len(indices)) * (0.5 * (mu_min + mu_max))
-            impact_velocity = np.ones(len(indices)) * (0.5 * (v0_min + v0_max))
+                    r_min, r_max = _get_restitution_range()
+                    mu_min, mu_max = _get_friction_range()
+                    v0_min, v0_max = _get_impact_velocity_range()
+                    restitution = np.ones(len(indices)) * (0.5 * (r_min + r_max))
+                    friction = np.ones(len(indices)) * (0.5 * (mu_min + mu_max))
+                    impact_velocity = np.ones(len(indices)) * (0.5 * (v0_min + v0_max))
 
                     x_sampled = np.stack([
                         x_flat[indices],
@@ -197,24 +204,48 @@ def sample_domain(n, z_min, z_max):
 def sample_domain_under_patch(n, z_min, z_max):
     x_min, x_max = config.LOAD_PATCH_X
     y_min, y_max = config.LOAD_PATCH_Y
-    x = torch.rand(n, 1) * (x_max - x_min) + x_min
-    y = torch.rand(n, 1) * (y_max - y_min) + y_min
+    bias_frac = float(getattr(config, "PATCH_CENTER_BIAS_FRACTION", 0.0))
+    bias_frac = max(0.0, min(bias_frac, 1.0))
+    n_bias = int(n * bias_frac)
+    n_uniform = n - n_bias
+    if n_bias > 0:
+        shape = float(getattr(config, "PATCH_CENTER_BIAS_SHAPE", 2.0))
+        alpha = torch.full((n_bias, 1), shape)
+        beta = torch.full((n_bias, 1), shape)
+        center_dist = torch.distributions.Beta(alpha, beta)
+        x_bias = center_dist.sample() * (x_max - x_min) + x_min
+        y_bias = center_dist.sample() * (y_max - y_min) + y_min
+        x_uniform = torch.rand(n_uniform, 1) * (x_max - x_min) + x_min
+        y_uniform = torch.rand(n_uniform, 1) * (y_max - y_min) + y_min
+        x = torch.cat([x_bias, x_uniform], dim=0)
+        y = torch.cat([y_bias, y_uniform], dim=0)
+    else:
+        x = torch.rand(n, 1) * (x_max - x_min) + x_min
+        y = torch.rand(n, 1) * (y_max - y_min) + y_min
     e1, e2, t1, t2, restitution, friction, impact_velocity = _sample_param_columns(n)
     t_total = t1 + t2
     z = torch.rand(n, 1) * t_total
     return torch.cat([x, y, z, e1, t1, e2, t2, restitution, friction, impact_velocity], dim=1)
 
 def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
+    if n <= 0:
+        return prev_pts.new_empty((0, prev_pts.shape[1]))
     # Check if residuals are too small - fall back to uniform sampling
     if prev_residuals.sum() < 1e-12 or torch.isnan(prev_residuals).any():
         return sample_domain(n, z_min, z_max)
     
     # Normalize residuals to probabilities
-    residual_probs = prev_residuals / prev_residuals.sum()
+    residual_probs = prev_residuals
+    if residual_probs.dim() > 1:
+        residual_probs = residual_probs.mean(dim=1)
+    residual_probs = residual_probs.reshape(-1)
+    residual_probs = residual_probs / residual_probs.sum()
     residual_probs = residual_probs + 1e-10  # Add small epsilon for numerical stability
     residual_probs = residual_probs / residual_probs.sum()  # Renormalize
     
     # Sample indices based on residual weights
+    if n <= 0:
+        return prev_pts.new_empty((0, prev_pts.shape[1]))
     indices = torch.multinomial(residual_probs, n, replacement=True)
     sampled_pts = prev_pts[indices]
     
@@ -293,6 +324,8 @@ def sample_boundaries(n, z_min, z_max):
     return torch.cat([p1, p2, p3, p4], dim=0)
 
 def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
+    if n <= 0:
+        return prev_pts.new_empty((0, prev_pts.shape[1]))
     # Check if residuals are too small - fall back to uniform sampling
     if prev_residuals.sum() < 1e-12 or torch.isnan(prev_residuals).any():
         return sample_boundaries(n, z_min, z_max)
@@ -369,6 +402,16 @@ def sample_top_load(n):
     # Loaded Patch: Lx/3 < x < 2Lx/3 AND Ly/3 < y < 2Ly/3
     xl = torch.rand(n, 1) * (config.Lx/3) + config.Lx/3
     yl = torch.rand(n, 1) * (config.Ly/3) + config.Ly/3
+    bias_frac = float(getattr(config, "PATCH_CENTER_BIAS_FRACTION", 0.0))
+    bias_frac = max(0.0, min(bias_frac, 1.0))
+    n_bias = int(n * bias_frac)
+    if n_bias > 0:
+        shape = float(getattr(config, "PATCH_CENTER_BIAS_SHAPE", 2.0))
+        alpha = torch.full((n_bias, 1), shape)
+        beta = torch.full((n_bias, 1), shape)
+        center_dist = torch.distributions.Beta(alpha, beta)
+        xl[:n_bias] = center_dist.sample() * (config.Lx/3) + config.Lx/3
+        yl[:n_bias] = center_dist.sample() * (config.Ly/3) + config.Ly/3
     e1l, e2l, t1l, t2l, rl, mul, v0l = _sample_param_columns(n)
     zl = (t1l + t2l).clone()
     return torch.cat([xl, yl, zl, e1l, t1l, e2l, t2l, rl, mul, v0l], dim=1)
@@ -398,6 +441,8 @@ def sample_top_free(n):
     return pts_free
 
 def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_load_patch=False, is_load_patch=False):
+    if n <= 0:
+        return prev_pts.new_empty((0, prev_pts.shape[1]))
     # Check if residuals are too small - fall back to uniform sampling
     if prev_residuals.sum() < 1e-12 or torch.isnan(prev_residuals).any():
         if constrain_load_patch and is_load_patch:

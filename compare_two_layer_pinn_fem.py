@@ -182,18 +182,21 @@ def _plot_case(case_name, output_dir, pinn, device, e1, e2, t1, t2):
     axes2[0].set_title("Two-Layer FEA Cross-Section")
     axes2[0].set_xlabel("x")
     axes2[0].set_ylabel("z")
+    axes2[0].axhline(float(t1), color="white", linestyle="--", linewidth=1.2, alpha=0.9)
 
     c4 = axes2[1].contourf(x_cross, z_cross, u_z_pinn_cross, levels=50, cmap="jet", vmin=vmin2, vmax=vmax2)
     plt.colorbar(c4, ax=axes2[1])
     axes2[1].set_title("Two-Layer PINN Cross-Section")
     axes2[1].set_xlabel("x")
     axes2[1].set_ylabel("z")
+    axes2[1].axhline(float(t1), color="white", linestyle="--", linewidth=1.2, alpha=0.9)
 
     c5 = axes2[2].contourf(x_cross, z_cross, abs_err_cross, levels=50, cmap="magma")
     plt.colorbar(c5, ax=axes2[2])
     axes2[2].set_title(f"Abs Error Cross-Section\nMAE={np.mean(abs_err_cross):.5f}")
     axes2[2].set_xlabel("x")
     axes2[2].set_ylabel("z")
+    axes2[2].axhline(float(t1), color="white", linestyle="--", linewidth=1.2, alpha=0.9)
 
     fig2.tight_layout()
     fig2.savefig(os.path.join(output_dir, f"{case_name}_cross_section.png"), dpi=160)
@@ -203,7 +206,11 @@ def _plot_case(case_name, output_dir, pinn, device, e1, e2, t1, t2):
 
 
 def _plot_sweep(output_dir, pinn, device, t1, t2):
-    e_values = [float(v) for v in getattr(config, "DATA_E_VALUES", [1.0, 5.0, 10.0])]
+    if hasattr(config, "EVAL_E_VALUES"):
+        e_values = [float(v) for v in config.EVAL_E_VALUES]
+    else:
+        e_range = getattr(config, "E_RANGE", [1.0, 10.0])
+        e_values = [float(e_range[0]), float(e_range[-1])]
     mae_pct_grid = np.zeros((len(e_values), len(e_values)))
 
     fea_cache = {}
@@ -277,8 +284,14 @@ def main():
 
     pinn = _load_pinn(device)
 
-    t1_values = [float(v) for v in getattr(config, "DATA_T1_VALUES", [float(getattr(config, "H", 0.1)) * 0.5])]
-    t2_values = [float(v) for v in getattr(config, "DATA_T2_VALUES", [float(getattr(config, "H", 0.1)) * 0.5])]
+    if hasattr(config, "EVAL_T1_VALUES"):
+        t1_values = [float(v) for v in config.EVAL_T1_VALUES]
+    else:
+        t1_values = [float(v) for v in getattr(config, "DATA_T1_VALUES", [float(getattr(config, "H", 0.1)) * 0.5])]
+    if hasattr(config, "EVAL_T2_VALUES"):
+        t2_values = [float(v) for v in config.EVAL_T2_VALUES]
+    else:
+        t2_values = [float(v) for v in getattr(config, "DATA_T2_VALUES", [float(getattr(config, "H", 0.1)) * 0.5])]
     t1_min, t1_max = min(t1_values), max(t1_values)
     t2_min, t2_max = min(t2_values), max(t2_values)
 

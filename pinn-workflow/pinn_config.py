@@ -63,6 +63,11 @@ Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 # --- Loading ---
 p0 = 1.0 # Load magnitude
 
+# --- FEA supervision mesh (lower = faster) ---
+FEM_NE_X = 8
+FEM_NE_Y = 8
+FEM_NE_Z = 3
+
 # --- Unit-consistent loss scaling ---
 # div(sigma) has units of stress/length; scale by a characteristic length.
 PDE_LENGTH_SCALE = H
@@ -118,8 +123,11 @@ N_TOP_FREE = 2000  # Top free surface
 N_BOTTOM = 2000  # Bottom free surface
 N_INTERFACE = 2000  # Exact points on the layer interface
 UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
-INTERFACE_SAMPLE_FRACTION = 0.2
+INTERFACE_SAMPLE_FRACTION = 0.4
 INTERFACE_BAND = 0.05 * H
+# Bias a portion of patch samples toward the center.
+PATCH_CENTER_BIAS_FRACTION = 0.8
+PATCH_CENTER_BIAS_SHAPE = 3.0
 
 #Resampling/perturbation control
 SAMPLING_NOISE_SCALE = 0.08  # Larger perturbations widen coverage while still sampling residual-rich zones.
@@ -133,10 +141,14 @@ FOURIER_DIM = 0 # Number of Fourier frequencies
 FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 
 # Hybrid / Parametric Training Data
-N_DATA_POINTS = 9000
-DATA_E_VALUES = [1.0, 5.0, 10.0]
-DATA_T1_VALUES = [0.05, 0.08]
-DATA_T2_VALUES = [0.05, 0.08]
+N_DATA_POINTS = 1200
+DATA_E_VALUES = [1.0, 10.0]
+DATA_T1_VALUES = [0.05]
+DATA_T2_VALUES = [0.08]
+# Smaller evaluation grid for quick sweeps.
+EVAL_E_VALUES = [1.0, 10.0]
+EVAL_T1_VALUES = [0.05]
+EVAL_T2_VALUES = [0.08]
 USE_SUPERVISION_DATA = True
 
 # --- Explicit impact/friction physics controls ---

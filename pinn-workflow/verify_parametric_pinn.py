@@ -204,15 +204,18 @@ def verify_parametric(pinn, device, viz_dir):
                 im_fea_c = axes_cs[0].contourf(X_c, Z_c, UZ_fea_c, 50, cmap='jet', vmin=v_min_c, vmax=v_max_c)
                 plt.colorbar(im_fea_c, ax=axes_cs[0])
                 axes_cs[0].set_title(f"FEA Cross-Section\nPeak: {np.nanmin(UZ_fea_c):.4f}")
+                axes_cs[0].axhline(float(t1_val), color='white', linestyle='--', linewidth=1.2, alpha=0.9)
 
                 im_pinn_c = axes_cs[1].contourf(X_c, Z_c, UZ_pinn_c, 50, cmap='jet', vmin=v_min_c, vmax=v_max_c)
                 plt.colorbar(im_pinn_c, ax=axes_cs[1])
                 axes_cs[1].set_title(f"PINN Cross-Section\nPeak: {UZ_pinn_c.min():.4f}")
+                axes_cs[1].axhline(float(t1_val), color='white', linestyle='--', linewidth=1.2, alpha=0.9)
 
                 err_c = np.abs(UZ_pinn_c - UZ_fea_c)
                 im_err_c = axes_cs[2].contourf(X_c, Z_c, err_c, 50, cmap='magma')
                 plt.colorbar(im_err_c, ax=axes_cs[2])
                 axes_cs[2].set_title(f"Abs Error\nMAE: {np.nanmean(err_c):.5f}")
+                axes_cs[2].axhline(float(t1_val), color='white', linestyle='--', linewidth=1.2, alpha=0.9)
 
                 for ax in axes_cs:
                     ax.set_xlabel('x')
