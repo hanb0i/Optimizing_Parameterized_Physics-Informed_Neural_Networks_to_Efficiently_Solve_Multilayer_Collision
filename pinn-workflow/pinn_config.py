@@ -44,7 +44,7 @@ IMPACT_VELOCITY_REF = 1.0
 # high-E under/over-shoot without retraining.
 E_COMPLIANCE_POWER = 0.99
 # Global compliance calibration applied at evaluation/inference time.
-DISPLACEMENT_COMPLIANCE_SCALE = 1.38
+DISPLACEMENT_COMPLIANCE_SCALE = 1.0
 
 # --- Parametric compliance scaling ---
 # Many plate-like problems scale strongly with thickness (often ~ 1/t^3).
@@ -52,7 +52,7 @@ DISPLACEMENT_COMPLIANCE_SCALE = 1.38
 #   u = (v / E) * (H / t)^alpha
 # where H is the baseline thickness (config.H) and t is the sampled thickness.
 # Set alpha=0.0 to disable.
-THICKNESS_COMPLIANCE_ALPHA = 1.85
+THICKNESS_COMPLIANCE_ALPHA = 3.0
 
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
@@ -65,9 +65,9 @@ Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 p0 = 1.0 # Load magnitude
 
 # --- FEA supervision mesh (lower = faster) ---
-FEM_NE_X = 8
-FEM_NE_Y = 8
-FEM_NE_Z = 3
+FEM_NE_X = 10
+FEM_NE_Y = 10
+FEM_NE_Z = 4
 
 # --- Unit-consistent loss scaling ---
 # div(sigma) has units of stress/length; scale by a characteristic length.
@@ -89,13 +89,13 @@ INTERFACE_FEATURE_BETA = 20.0
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
-EPOCHS_ADAM = 2000
+EPOCHS_ADAM = 400
 EPOCHS_LBFGS = 0
 # SOAP optimizer
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
-    'pde': 5.0,    # Reverted to 5.0 (Optimal: 0.4% Error at E=1, 10% at E=10)
+    'pde': 4.0,
     'bc': 0.7,      # Slightly softer sides so load can gather more budget
     'load': 5.0, # Optimal load weight
     'energy': 0.63, # Per user request
@@ -103,7 +103,7 @@ WEIGHTS = {
     'impact_contact': 0.0002,   # Reduced to preserve FEA parity in no-supervision mode
     'friction_coulomb': 0.001,  # Reduced to preserve FEA parity in no-supervision mode
     'friction_stick': 0.0005,   # Reduced to preserve FEA parity in no-supervision mode
-    'interface_u': 1.0,
+    'interface_u': 20.0,
     'data': 5.0
 }
 
@@ -162,7 +162,7 @@ for _k, _env in [
         WEIGHTS[_k] = _env_float(_env, float(WEIGHTS.get(_k, 0.0)))
 
 # PDE decomposition toggle (balances stiff/soft layers during training).
-PDE_DECOMPOSE_BY_LAYER = _env_flag("PINN_PDE_DECOMPOSE_BY_LAYER", False)
+PDE_DECOMPOSE_BY_LAYER = _env_flag("PINN_PDE_DECOMPOSE_BY_LAYER", True)
 
 # Loss weight ramp: load-first to raise displacement while preserving shape.
 WEIGHT_RAMP_EPOCHS = 0
@@ -179,9 +179,9 @@ N_SIDES = 2000  # Clamped side faces
 N_TOP_LOAD = 6000  # Load patch (more points to boost displacement)
 N_TOP_FREE = 2000  # Top free surface
 N_BOTTOM = 2000  # Bottom free surface
-N_INTERFACE = _env_int("PINN_N_INTERFACE", 2000)  # Exact points on the layer interface
+N_INTERFACE = _env_int("PINN_N_INTERFACE", 4000)  # Exact points on the layer interface
 UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
-INTERFACE_SAMPLE_FRACTION = _env_float("PINN_INTERFACE_SAMPLE_FRACTION", 0.4)
+INTERFACE_SAMPLE_FRACTION = _env_float("PINN_INTERFACE_SAMPLE_FRACTION", 0.25)
 INTERFACE_BAND = 0.05 * H
 # Bias a portion of patch samples toward the center.
 PATCH_CENTER_BIAS_FRACTION = 0.8
@@ -199,14 +199,14 @@ FOURIER_DIM = 0 # Number of Fourier frequencies
 FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 
 # Hybrid / Parametric Training Data
-N_DATA_POINTS = _env_int("PINN_N_DATA_POINTS", 1200)
+N_DATA_POINTS = _env_int("PINN_N_DATA_POINTS", 4000)
 DATA_E_VALUES = [1.0, 10.0]
-DATA_T1_VALUES = [0.05]
-DATA_T2_VALUES = [0.08]
+DATA_T1_VALUES = [0.02, 0.10]
+DATA_T2_VALUES = [0.02, 0.10]
 # Smaller evaluation grid for quick sweeps.
 EVAL_E_VALUES = [1.0, 10.0]
-EVAL_T1_VALUES = [0.05]
-EVAL_T2_VALUES = [0.08]
+EVAL_T1_VALUES = [0.02, 0.10]
+EVAL_T2_VALUES = [0.02, 0.10]
 USE_SUPERVISION_DATA = True
 
 DATA_E_VALUES = _env_float_list("PINN_DATA_E_VALUES", DATA_E_VALUES)
