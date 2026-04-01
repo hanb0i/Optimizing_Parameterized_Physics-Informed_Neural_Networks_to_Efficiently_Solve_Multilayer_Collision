@@ -3,3 +3,4 @@ uv.lock
 .tmp/
 pinn-workflow/supervision_cache/
 pinn-workflow/checkpoints/
+pinn-workflow/surrogate_workflow/outputs/
