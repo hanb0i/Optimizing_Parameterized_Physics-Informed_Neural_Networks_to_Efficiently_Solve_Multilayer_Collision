@@ -12,29 +12,36 @@ import model
 import physics
 import matplotlib.pyplot as plt
 
+def _artifact_dir():
+    default_dir = os.path.dirname(os.path.abspath(__file__))
+    out_dir = os.getenv("PINN_OUT_DIR", default_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    return out_dir
+
+def _artifact_path(filename: str) -> str:
+    return os.path.join(_artifact_dir(), filename)
+
+def _u_from_v(v, pts):
+    e_scale = (pts[:, 3:4] + pts[:, 5:6] + pts[:, 7:8]) / 3.0
+    t_scale = pts[:, 4:5] + pts[:, 6:7] + pts[:, 8:9]
+    e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
+    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
+    scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
+    h_ref = float(getattr(config, "H", 1.0))
+    return scale * v / (e_scale ** e_pow) * (h_ref / np.clip(t_scale, 1e-8, None)) ** alpha
+
 def _load_compatible_state_dict(pinn, ckpt_path, device):
     sd = torch.load(ckpt_path, map_location=device, weights_only=True)
-    target_sd = pinn.state_dict()
-    w_key = "layer.net.0.weight"
-    if w_key in sd and w_key in target_sd:
-        src_w = sd[w_key]
-        tgt_w = target_sd[w_key]
-        if src_w.shape != tgt_w.shape and src_w.shape[0] == tgt_w.shape[0]:
-            # Old parametric model: [x,y,z,E,t,inv1,inv2,inv3]
-            if src_w.shape[1] == 8 and tgt_w.shape[1] == 11:
-                adapted = torch.zeros_like(tgt_w)
-                adapted[:, 0:5] = src_w[:, 0:5]
-                adapted[:, 8:11] = src_w[:, 5:8]
-                sd[w_key] = adapted
-                print("Adapted first-layer weights from 8->11 inputs (inserted neutral r/mu/v0 channels).")
-            elif src_w.shape[1] == 10 and tgt_w.shape[1] == 11:
-                adapted = torch.zeros_like(tgt_w)
-                adapted[:, 0:7] = src_w[:, 0:7]
-                adapted[:, 8:11] = src_w[:, 7:10]
-                sd[w_key] = adapted
-                print("Adapted first-layer weights from 10->11 inputs (inserted neutral v0 channel).")
+    remap_same_shape = os.getenv("PINN_ASSUME_LEGACY_CHECKPOINT", "0") == "1"
+    sd = model.adapt_legacy_state_dict(
+        sd,
+        pinn.state_dict(),
+        remap_same_shape=remap_same_shape,
+    )
     missing, unexpected = pinn.load_state_dict(sd, strict=False)
     print(f"Warm-start loaded from {ckpt_path}")
+    if remap_same_shape:
+        print("  Applied same-shape legacy input remap for the warm start checkpoint.")
     if missing:
         print(f"  Missing keys: {len(missing)}")
     if unexpected:
@@ -73,7 +80,13 @@ def train():
     pinn = model.MultiLayerPINN().to(device)
     print(pinn)
     if os.getenv("PINN_WARM_START", "1") == "1":
-        ckpt_candidates = ["pinn_model.pth", os.path.join("..", "pinn_model.pth")]
+        ckpt_candidates = [
+            _artifact_path("pinn_model.pth"),
+            _artifact_path(os.path.join("checkpoints", "pinn_model_baseline_6p96.pth")),
+            os.path.join(os.path.dirname(_artifact_dir()), "pinn_model.pth"),
+            "pinn_model.pth",
+            os.path.join("..", "pinn_model.pth"),
+        ]
         for ckpt in ckpt_candidates:
             if os.path.exists(ckpt):
                 _load_compatible_state_dict(pinn, ckpt, device)
@@ -105,17 +118,24 @@ def train():
         Z_fea = fem_data['z']
         U_fea = fem_data['u']
         
-        # Prepare FEM evaluation grid (append base E and thickness for parametric PINN)
+        # Prepare FEM evaluation grid using homogeneous E1=E2 plus reference impact params.
+        thickness_ref = float(np.max(Z_fea))
         pts_fea = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
-        e_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
-        t_ones = np.ones((pts_fea.shape[0], 1)) * config.H
+        e1_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
+        e2_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
+        e3_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
+        t1_ones = np.ones((pts_fea.shape[0], 1)) * (thickness_ref / 3.0)
+        t2_ones = np.ones((pts_fea.shape[0], 1)) * (thickness_ref / 3.0)
+        t3_ones = np.ones((pts_fea.shape[0], 1)) * (thickness_ref / 3.0)
         r_ref = float(getattr(config, "RESTITUTION_REF", 0.5))
         mu_ref = float(getattr(config, "FRICTION_REF", 0.3))
         v0_ref = float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
         r_ones = np.ones((pts_fea.shape[0], 1)) * r_ref
         mu_ones = np.ones((pts_fea.shape[0], 1)) * mu_ref
         v0_ones = np.ones((pts_fea.shape[0], 1)) * v0_ref
-        pts_fea = np.hstack([pts_fea, e_ones, t_ones, r_ones, mu_ones, v0_ones])
+        pts_fea = np.hstack(
+            [pts_fea, e1_ones, t1_ones, e2_ones, t2_ones, e3_ones, t3_ones, r_ones, mu_ones, v0_ones]
+        )
         pts_fea_tensor = torch.tensor(pts_fea, dtype=torch.float32).to(device)
         u_fea_flat = U_fea.reshape(-1, 3)
         
@@ -151,6 +171,7 @@ def train():
         'impact_contact': [],
         'friction_coulomb': [],
         'friction_stick': [],
+        'interface_u': [],
         'fem_mae': [],
         'fem_max_err': [],
         'epochs': []
@@ -168,6 +189,7 @@ def train():
         'impact_contact': [],
         'friction_coulomb': [],
         'friction_stick': [],
+        'interface_u': [],
         'fem_mae': [],
         'fem_max_err': [],
         'steps': []
@@ -213,6 +235,7 @@ def train():
         adam_history['impact_contact'].append(losses.get('impact_contact', torch.tensor(0.0)).item())
         adam_history['friction_coulomb'].append(losses.get('friction_coulomb', torch.tensor(0.0)).item())
         adam_history['friction_stick'].append(losses.get('friction_stick', torch.tensor(0.0)).item())
+        adam_history['interface_u'].append(losses.get('interface_u', torch.tensor(0.0)).item())
         
         if epoch % 100 == 0:
             current_time = time.time()
@@ -224,16 +247,7 @@ def train():
             if fem_available:
                 with torch.no_grad():
                     v_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
-                    # Apply compliance scaling u = (v / E^p) * (H / t)^alpha
-                    E_vals = pts_fea[:, 3:4]  # numpy array from line 71
-                    t_vals = pts_fea[:, 4:5]
-                    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
-                    if alpha == 0.0:
-                        t_scale = 1.0
-                    else:
-                        t_scale = (float(getattr(config, "H", 1.0)) / np.clip(t_vals, 1e-8, None)) ** alpha
-                    e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
-                    u_pinn_flat = (v_pinn_flat / (E_vals ** e_pow)) * t_scale
+                    u_pinn_flat = _u_from_v(v_pinn_flat, pts_fea)
                      
                     diff = np.abs(u_pinn_flat - u_fea_flat)
                     mae = np.mean(diff)
@@ -249,6 +263,7 @@ def train():
                       f"ImpactC: {losses.get('impact_contact', torch.tensor(0.0)).item():.6f} | "
                       f"FricC: {losses.get('friction_coulomb', torch.tensor(0.0)).item():.6f} | "
                       f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6f} | "
+                      f"Interface: {losses.get('interface_u', torch.tensor(0.0)).item():.6f} | "
                       f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6f} | "
                       f"LR: {current_lr:.2e} | "
                       f"FEM MAE: {mae:.6f} | Time: {step_duration:.4f}s")
@@ -260,6 +275,7 @@ def train():
                       f"ImpactC: {losses.get('impact_contact', torch.tensor(0.0)).item():.6f} | "
                       f"FricC: {losses.get('friction_coulomb', torch.tensor(0.0)).item():.6f} | "
                       f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6f} | "
+                      f"Interface: {losses.get('interface_u', torch.tensor(0.0)).item():.6f} | "
                       f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6f} | "
                       f"LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
             
@@ -306,21 +322,13 @@ def train():
         lbfgs_history['impact_contact'].append(losses.get('impact_contact', torch.tensor(0.0)).item())
         lbfgs_history['friction_coulomb'].append(losses.get('friction_coulomb', torch.tensor(0.0)).item())
         lbfgs_history['friction_stick'].append(losses.get('friction_stick', torch.tensor(0.0)).item())
+        lbfgs_history['interface_u'].append(losses.get('interface_u', torch.tensor(0.0)).item())
         
         # Compute FEM error and print
         if fem_available:
             with torch.no_grad():
                 v_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
-                # Apply compliance scaling u = (v / E^p) * (H / t)^alpha
-                E_vals = pts_fea[:, 3:4]
-                t_vals = pts_fea[:, 4:5]
-                alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
-                if alpha == 0.0:
-                    t_scale = 1.0
-                else:
-                    t_scale = (float(getattr(config, "H", 1.0)) / np.clip(t_vals, 1e-8, None)) ** alpha
-                e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
-                u_pinn_flat = (v_pinn_flat / (E_vals ** e_pow)) * t_scale
+                u_pinn_flat = _u_from_v(v_pinn_flat, pts_fea)
                 diff = np.abs(u_pinn_flat - u_fea_flat)
                 mae = np.mean(diff)
                 max_err = np.max(diff)
@@ -334,6 +342,7 @@ def train():
                   f"ImpactC: {losses.get('impact_contact', torch.tensor(0.0)).item():.6e} | "
                   f"FricC: {losses.get('friction_coulomb', torch.tensor(0.0)).item():.6e} | "
                   f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6e} | "
+                  f"Interface: {losses.get('interface_u', torch.tensor(0.0)).item():.6e} | "
                   f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6e} | "
                   f"FEM MAE: {mae:.6e} | Time: {step_end - step_start:.4f}s")
         else:
@@ -344,17 +353,18 @@ def train():
                   f"ImpactC: {losses.get('impact_contact', torch.tensor(0.0)).item():.6e} | "
                   f"FricC: {losses.get('friction_coulomb', torch.tensor(0.0)).item():.6e} | "
                   f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6e} | "
+                  f"Interface: {losses.get('interface_u', torch.tensor(0.0)).item():.6e} | "
                   f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6e} | "
                   f"Time: {step_end - step_start:.4f}s")
         
         # Save model at every L-BFGS step
-        torch.save(pinn.state_dict(), "pinn_model.pth")
+        torch.save(pinn.state_dict(), _artifact_path("pinn_model.pth"))
             
     # Save Model and Loss Histories
-    torch.save(pinn.state_dict(), "pinn_model.pth")
+    torch.save(pinn.state_dict(), _artifact_path("pinn_model.pth"))
     loss_history = {'adam': adam_history, 'lbfgs': lbfgs_history}
-    np.save("loss_history.npy", loss_history)
-    print("Model saved.")
+    np.save(_artifact_path("loss_history.npy"), loss_history)
+    print(f"Model saved to {_artifact_path('pinn_model.pth')}")
     return pinn
 
 if __name__ == "__main__":

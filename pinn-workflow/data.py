@@ -1,6 +1,9 @@
+
 import torch
 import numpy as np
 import os
+import json
+import hashlib
 import pinn_config as config
 
 # Parameter range helper (keeps baseline configs intact)
@@ -14,11 +17,21 @@ def _get_e_range():
             e_max = e_min + 1.0
     return float(e_min), float(e_max)
 
-def _get_thickness_range():
-    if hasattr(config, "THICKNESS_RANGE"):
-        t_min, t_max = config.THICKNESS_RANGE
+def _get_t1_range():
+    if hasattr(config, "T1_RANGE"):
+        t_min, t_max = config.T1_RANGE
     else:
-        t_min, t_max = float(getattr(config, "H", 0.1)), float(getattr(config, "H", 0.1))
+        t_min, t_max = float(getattr(config, "H", 0.1)) * 0.5, float(getattr(config, "H", 0.1)) * 0.5
+        if t_min == t_max:
+            t_max = t_min + 0.01
+    return float(t_min), float(t_max)
+
+
+def _get_t2_range():
+    if hasattr(config, "T2_RANGE"):
+        t_min, t_max = config.T2_RANGE
+    else:
+        t_min, t_max = float(getattr(config, "H", 0.1)) * 0.5, float(getattr(config, "H", 0.1)) * 0.5
         if t_min == t_max:
             t_max = t_min + 0.01
     return float(t_min), float(t_max)
@@ -44,6 +57,54 @@ def _get_impact_velocity_range():
         v0_min, v0_max = 1.0, 1.0
     return float(v0_min), float(v0_max)
 
+
+def _sample_e_pairs(n):
+    e_min, e_max = _get_e_range()
+    e1 = torch.rand(n, 1) * (e_max - e_min) + e_min
+    e2 = torch.rand(n, 1) * (e_max - e_min) + e_min
+    e3 = torch.rand(n, 1) * (e_max - e_min) + e_min
+    return e1, e2, e3
+
+
+def _sample_t1(n):
+    t_min, t_max = _get_t1_range()
+    return torch.rand(n, 1) * (t_max - t_min) + t_min
+
+
+def _sample_t2(n):
+    t_min, t_max = _get_t2_range()
+    return torch.rand(n, 1) * (t_max - t_min) + t_min
+
+
+def _get_t3_range():
+    if hasattr(config, "T3_RANGE"):
+        t_min, t_max = config.T3_RANGE
+    else:
+        t_min = float(getattr(config, "H", 0.1)) / 3.0
+        t_max = float(getattr(config, "H", 0.1)) / 3.0
+        if t_min == t_max:
+            t_max = t_min + 0.01
+    return float(t_min), float(t_max)
+
+
+def _sample_t3(n):
+    t_min, t_max = _get_t3_range()
+    return torch.rand(n, 1) * (t_max - t_min) + t_min
+
+
+def _sample_param_columns(n):
+    e1, e2, e3 = _sample_e_pairs(n)
+    t1 = _sample_t1(n)
+    t2 = _sample_t2(n)
+    t3 = _sample_t3(n)
+    r_min, r_max = _get_restitution_range()
+    restitution = torch.rand(n, 1) * (r_max - r_min) + r_min
+    mu_min, mu_max = _get_friction_range()
+    friction = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
+    v0_min, v0_max = _get_impact_velocity_range()
+    impact_velocity = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
+    return e1, e2, e3, t1, t2, t3, restitution, friction, impact_velocity
+
 # Import FEM solver for generating supervision data
 import sys
 FEA_SOLVER_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fea-workflow", "solver")
@@ -51,167 +112,370 @@ if FEA_SOLVER_DIR not in sys.path:
     sys.path.insert(0, FEA_SOLVER_DIR)
 
 
-def load_fem_supervision_data(n_points_per_e=None, e_values=None, thickness_values=None):
-    """Load sparse FEM supervision data for hybrid training.
-    
-    Generates FEM solutions for each E value and samples sparse points.
-    
-    Args:
-        n_points_per_e: Number of points to sample per E value (default: config.N_DATA_POINTS // len(E))
-        e_values: List of E values to sample (default: config.DATA_E_VALUES)
-    
-    Returns:
-        x_data: (N, 8) tensor of input points [x, y, z, E, thickness, restitution, friction, v0]
-        u_data: (N, 3) tensor of target displacements [ux, uy, uz]
-    """
+def load_fem_supervision_data(
+    n_points_per_e=None,
+    e_values=None,
+    t1_values=None,
+    t2_values=None,
+    t3_values=None,
+):
     import fem_solver
-    
+
+    cache_enabled = os.getenv("PINN_SUPERVISION_CACHE", "1").strip().lower() in {"1", "true", "yes", "y", "on"}
+    force_regen = os.getenv("PINN_REGEN_SUPERVISION", "0").strip().lower() in {"1", "true", "yes", "y", "on"}
+
     if e_values is None:
         if hasattr(config, "DATA_E_VALUES"):
             e_values = config.DATA_E_VALUES
         else:
             e_min, e_max = _get_e_range()
             e_values = [e_min, 0.5 * (e_min + e_max), e_max]
-    if thickness_values is None:
-        if hasattr(config, "DATA_THICKNESS_VALUES"):
-            thickness_values = config.DATA_THICKNESS_VALUES
+    if t1_values is None:
+        if hasattr(config, "DATA_T1_VALUES"):
+            t1_values = config.DATA_T1_VALUES
         else:
-            t_min, t_max = _get_thickness_range()
-            thickness_values = [t_min, 0.5 * (t_min + t_max), t_max]
+            t1_values = [float(getattr(config, "H", 0.1)) * 0.5]
+    if t2_values is None:
+        if hasattr(config, "DATA_T2_VALUES"):
+            t2_values = config.DATA_T2_VALUES
+        else:
+            t2_values = [float(getattr(config, "H", 0.1)) * 0.5]
+    if t3_values is None:
+        if hasattr(config, "DATA_T3_VALUES"):
+            t3_values = config.DATA_T3_VALUES
+        else:
+            t3_values = [float(getattr(config, "H", 0.1)) / 3.0]
     
-    if n_points_per_e is None:
-        if hasattr(config, "N_DATA_POINTS"):
-            n_points_per_e = config.N_DATA_POINTS // max(1, (len(e_values) * len(thickness_values)))
-        else:
+    total_target_points = None
+    case_counts = None
+    thickness_power = float(os.getenv("PINN_SUPERVISION_THICKNESS_POWER", "1.5"))
+    e_power = float(os.getenv("PINN_SUPERVISION_E_POWER", "0.0"))
+    if n_points_per_e is None and hasattr(config, "N_DATA_POINTS"):
+        total_target_points = int(getattr(config, "N_DATA_POINTS", 0))
+        n_cases = max(1, (len(e_values) ** 3) * len(t1_values) * len(t2_values) * len(t3_values))
+        if total_target_points <= 0:
             n_points_per_e = 0
+        else:
+            # Allocate more supervision points to thinner stacks (helps worst-case thin-sweep MAE)
+            # while keeping the total supervision budget fixed.
+            h_ref = float(getattr(config, "H", 1.0))
+            cases = []
+            weights = []
+            for it1, t1 in enumerate(t1_values):
+                for it2, t2 in enumerate(t2_values):
+                    for it3, t3 in enumerate(t3_values):
+                        thickness = float(t1) + float(t2) + float(t3)
+                        w_thickness = (h_ref / max(thickness, 1e-8)) ** thickness_power
+                        for iE1, e1 in enumerate(e_values):
+                            for iE2, e2 in enumerate(e_values):
+                                for iE3, e3 in enumerate(e_values):
+                                    e_mean = (float(e1) + float(e2) + float(e3)) / 3.0
+                                    e_ref = float(min(e_values)) if len(e_values) else 1.0
+                                    e_ref = max(e_ref, 1e-8)
+                                    w_stiff = (e_mean / e_ref) ** e_power if e_power != 0.0 else 1.0
+                                    cases.append((it1, it2, it3, iE1, iE2, iE3))
+                                    weights.append(w_thickness * w_stiff)
+
+            weights = np.asarray(weights, dtype=float)
+            weights = weights / max(weights.sum(), 1e-12)
+            desired = weights * float(total_target_points)
+            counts = np.floor(desired).astype(int)
+            remainder = int(total_target_points - counts.sum())
+            if remainder > 0:
+                frac = desired - counts
+                order = np.argsort(-frac)
+                counts[order[:remainder]] += 1
+            elif remainder < 0:
+                # Rare numerical corner: remove a few points from smallest fractional allocations.
+                frac = desired - counts
+                order = np.argsort(frac)
+                for idx in order[: -remainder]:
+                    if counts[idx] > 0:
+                        counts[idx] -= 1
+
+            # Cap by the maximum number of unique FEM nodes per case and redistribute leftover
+            # so we actually use the full supervision budget.
+            ne_x = int(getattr(config, "FEM_NE_X", 30))
+            ne_y = int(getattr(config, "FEM_NE_Y", 30))
+            ne_z = int(getattr(config, "FEM_NE_Z", 10))
+            max_points_per_case = int((ne_x + 1) * (ne_y + 1) * (ne_z + 1))
+
+            counts = np.minimum(counts, max_points_per_case)
+            remaining = int(total_target_points - counts.sum())
+            if remaining > 0:
+                capacity = max_points_per_case - counts
+                # Water-fill leftover proportionally to weights until we run out of capacity.
+                for _ in range(8):
+                    if remaining <= 0:
+                        break
+                    eligible = capacity > 0
+                    if not np.any(eligible):
+                        break
+                    w2 = weights * eligible.astype(float)
+                    w2_sum = float(w2.sum())
+                    if w2_sum <= 0:
+                        break
+                    desired2 = w2 / w2_sum * float(remaining)
+                    add = np.floor(desired2).astype(int)
+                    add = np.minimum(add, capacity)
+                    gained = int(add.sum())
+                    counts = counts + add
+                    capacity = capacity - add
+                    remaining -= gained
+                    if gained == 0:
+                        # Hand out the remaining points by fractional part.
+                        frac2 = desired2 - add
+                        order2 = np.argsort(-frac2)
+                        for idx in order2:
+                            if remaining <= 0:
+                                break
+                            if capacity[idx] <= 0:
+                                continue
+                            counts[idx] += 1
+                            capacity[idx] -= 1
+                            remaining -= 1
+                        break
+
+            case_counts = {case: int(cnt) for case, cnt in zip(cases, counts)}
+            n_points_per_e = int(round(total_target_points / max(n_cases, 1)))
+    elif n_points_per_e is None:
+        n_points_per_e = 0
+
+    meta = {
+        "e_values": [float(v) for v in e_values],
+        "t1_values": [float(v) for v in t1_values],
+        "t2_values": [float(v) for v in t2_values],
+        "t3_values": [float(v) for v in t3_values],
+        "n_points_per_e": int(n_points_per_e),
+        "n_points_total": int(total_target_points or 0),
+        "allocation": "thickness_power" if case_counts is not None else "uniform",
+        "allocation_thickness_power": float(thickness_power),
+        "allocation_e_power": float(e_power),
+        "ne_x": int(getattr(config, "FEM_NE_X", 30)),
+        "ne_y": int(getattr(config, "FEM_NE_Y", 30)),
+        "ne_z": int(getattr(config, "FEM_NE_Z", 10)),
+        "Lx": float(getattr(config, "Lx", 1.0)),
+        "Ly": float(getattr(config, "Ly", 1.0)),
+        "p0": float(getattr(config, "p0", 1.0)),
+        "load_patch": [list(getattr(config, "LOAD_PATCH_X", [0.0, 1.0])), list(getattr(config, "LOAD_PATCH_Y", [0.0, 1.0]))],
+        "nu": float(getattr(config, "nu_vals", [0.3])[0]),
+        # v6: thickness + stiffness-weighted allocation with cap redistribution.
+        "version": 6,
+    }
+    cache_key = hashlib.sha256(json.dumps(meta, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "supervision_cache")
+    cache_path = os.path.join(cache_dir, f"fem_supervision_{cache_key}.pt")
+
+    if cache_enabled and (not force_regen) and os.path.exists(cache_path):
+        blob = torch.load(cache_path, map_location="cpu")
+        x_data = blob["x"]
+        u_data = blob["u"]
+        print(f"  Loaded cached FEM supervision: {cache_path} ({len(x_data)} points)")
+        return x_data, u_data
     
     x_data_list = []
     u_data_list = []
     
-    for thickness in thickness_values:
-        for E_val in e_values:
-            print(f"  Generating FEM supervision for E={E_val}, thickness={thickness}...")
-            
-            # Run FEM solver
-            cfg = {
-                'geometry': {'Lx': config.Lx, 'Ly': config.Ly, 'H': thickness},
-                'material': {'E': E_val, 'nu': config.nu_vals[0]},
-                'load_patch': {
-                    'pressure': config.p0,
-                    'x_start': config.LOAD_PATCH_X[0] / config.Lx,
-                    'x_end': config.LOAD_PATCH_X[1] / config.Lx,
-                    'y_start': config.LOAD_PATCH_Y[0] / config.Ly,
-                    'y_end': config.LOAD_PATCH_Y[1] / config.Ly
-                }
-            }
-            x_nodes, y_nodes, z_nodes, u_grid = fem_solver.solve_fem(cfg)
-            
-            # Create mesh grid for all FEM nodes
-            nx, ny, nz = len(x_nodes), len(y_nodes), len(z_nodes)
-            X, Y, Z = np.meshgrid(x_nodes, y_nodes, z_nodes, indexing='ij')
-            
-            # Flatten to get all points
-            x_flat = X.flatten()
-            y_flat = Y.flatten()
-            z_flat = Z.flatten()
-            u_flat = u_grid.reshape(-1, 3)
-            
-            # Random sampling (sparse)
-            total_points = len(x_flat)
-            indices = np.random.choice(total_points, size=min(n_points_per_e, total_points), replace=False)
-            
-            # Create input points with E and thickness values
-            r_min, r_max = _get_restitution_range()
-            mu_min, mu_max = _get_friction_range()
-            v0_min, v0_max = _get_impact_velocity_range()
-            restitution = np.ones(len(indices)) * (0.5 * (r_min + r_max))
-            friction = np.ones(len(indices)) * (0.5 * (mu_min + mu_max))
-            impact_velocity = np.ones(len(indices)) * (0.5 * (v0_min + v0_max))
+    print("  FEM supervision uses three-layer solver across E1/E2/E3 and t1/t2/t3 grids.")
+    for it1, t1 in enumerate(t1_values):
+        for it2, t2 in enumerate(t2_values):
+            for it3, t3 in enumerate(t3_values):
+                thickness = float(t1) + float(t2) + float(t3)
+                for iE1, E1_val in enumerate(e_values):
+                    for iE2, E2_val in enumerate(e_values):
+                        for iE3, E3_val in enumerate(e_values):
+                            print(
+                                f"  Generating FEM supervision for E1={E1_val}, E2={E2_val}, E3={E3_val}, "
+                                f"t1={t1}, t2={t2}, t3={t3}..."
+                            )
 
-            x_sampled = np.stack([
-                x_flat[indices],
-                y_flat[indices],
-                z_flat[indices],
-                np.ones(len(indices)) * E_val,
-                np.ones(len(indices)) * thickness,
-                restitution,
-                friction,
-                impact_velocity
-            ], axis=1)
-            
-            u_sampled = u_flat[indices]
-            
-            x_data_list.append(torch.tensor(x_sampled, dtype=torch.float32))
-            u_data_list.append(torch.tensor(u_sampled, dtype=torch.float32))
+                            cfg = {
+                                "geometry": {
+                                    "Lx": config.Lx,
+                                    "Ly": config.Ly,
+                                    "H": thickness,
+                                    "ne_x": int(getattr(config, "FEM_NE_X", 30)),
+                                    "ne_y": int(getattr(config, "FEM_NE_Y", 30)),
+                                    "ne_z": int(getattr(config, "FEM_NE_Z", 10)),
+                                },
+                                "material": {
+                                    "E_layers": [float(E1_val), float(E2_val), float(E3_val)],
+                                    "t_layers": [float(t1), float(t2), float(t3)],
+                                    "nu": config.nu_vals[0],
+                                },
+                                "load_patch": {
+                                    "pressure": config.p0,
+                                    "x_start": config.LOAD_PATCH_X[0] / config.Lx,
+                                    "x_end": config.LOAD_PATCH_X[1] / config.Lx,
+                                    "y_start": config.LOAD_PATCH_Y[0] / config.Ly,
+                                    "y_end": config.LOAD_PATCH_Y[1] / config.Ly,
+                                },
+                            }
+                            x_nodes, y_nodes, z_nodes, u_grid = fem_solver.solve_three_layer_fem(cfg)
+
+                            X, Y, Z = np.meshgrid(x_nodes, y_nodes, z_nodes, indexing="ij")
+                            x_flat = X.flatten()
+                            y_flat = Y.flatten()
+                            z_flat = Z.flatten()
+                            u_flat = u_grid.reshape(-1, 3)
+
+                            nx, ny, nz = len(x_nodes), len(y_nodes), len(z_nodes)
+                            total_points = int(nx * ny * nz)
+                            if case_counts is not None:
+                                n_pick = int(case_counts.get((it1, it2, it3, iE1, iE2, iE3), 0))
+                            else:
+                                n_pick = int(n_points_per_e)
+                            n_pick = int(min(n_pick, total_points))
+
+                            def _pool_for_k(k_idx: int) -> np.ndarray:
+                                ii, jj = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
+                                return (ii.ravel() * (ny * nz) + jj.ravel() * nz + int(k_idx)).astype(int)
+
+                            k_top = nz - 1
+                            k_if1 = int(np.argmin(np.abs(np.array(z_nodes, dtype=float) - float(t1))))
+                            k_if2 = int(np.argmin(np.abs(np.array(z_nodes, dtype=float) - (float(t1) + float(t2)))))
+
+                            top_pool = _pool_for_k(k_top)
+                            if_pools = [_pool_for_k(k_if1)]
+                            if k_if2 != k_if1 and k_if2 != k_top:
+                                if_pools.append(_pool_for_k(k_if2))
+                            interface_pool = np.unique(np.concatenate(if_pools, axis=0))
+
+                            # Stratified sampling: emphasize top surface + interfaces.
+                            top_frac = 0.6
+                            if_frac = 0.3
+                            n_top = int(round(top_frac * n_pick))
+                            n_if = int(round(if_frac * n_pick))
+                            n_rest = max(0, n_pick - n_top - n_if)
+
+                            seed_material = f"{E1_val},{E2_val},{E3_val},{t1},{t2},{t3},{n_pick}".encode("utf-8")
+                            seed = int(hashlib.sha256(seed_material).hexdigest()[:8], 16)
+                            rng = np.random.default_rng(seed)
+
+                            picked = []
+
+                            def _pick_from_pool(pool: np.ndarray, n: int):
+                                nonlocal picked
+                                if n <= 0 or pool.size == 0:
+                                    return
+                                if n >= pool.size:
+                                    picked.extend(pool.tolist())
+                                else:
+                                    picked.extend(rng.choice(pool, size=n, replace=False).tolist())
+
+                            _pick_from_pool(top_pool, n_top)
+                            _pick_from_pool(interface_pool, n_if)
+
+                            picked = np.unique(np.array(picked, dtype=int))
+                            if picked.size < n_pick:
+                                remaining = np.setdiff1d(np.arange(total_points, dtype=int), picked, assume_unique=False)
+                                if remaining.size > 0:
+                                    extra = rng.choice(remaining, size=min(n_rest, remaining.size), replace=False)
+                                    picked = np.unique(np.concatenate([picked, extra], axis=0))
+
+                            if picked.size < n_pick:
+                                # Fallback: fill to requested size from full pool.
+                                remaining = np.setdiff1d(np.arange(total_points, dtype=int), picked, assume_unique=False)
+                                if remaining.size > 0:
+                                    extra = rng.choice(remaining, size=min(n_pick - picked.size, remaining.size), replace=False)
+                                    picked = np.unique(np.concatenate([picked, extra], axis=0))
+
+                            indices = picked[:n_pick]
+
+                            r_min, r_max = _get_restitution_range()
+                            mu_min, mu_max = _get_friction_range()
+                            v0_min, v0_max = _get_impact_velocity_range()
+                            restitution = np.ones(len(indices)) * (0.5 * (r_min + r_max))
+                            friction = np.ones(len(indices)) * (0.5 * (mu_min + mu_max))
+                            impact_velocity = np.ones(len(indices)) * (0.5 * (v0_min + v0_max))
+
+                            x_sampled = np.stack(
+                                [
+                                    x_flat[indices],
+                                    y_flat[indices],
+                                    z_flat[indices],
+                                    np.ones(len(indices)) * float(E1_val),
+                                    np.ones(len(indices)) * float(t1),
+                                    np.ones(len(indices)) * float(E2_val),
+                                    np.ones(len(indices)) * float(t2),
+                                    np.ones(len(indices)) * float(E3_val),
+                                    np.ones(len(indices)) * float(t3),
+                                    restitution,
+                                    friction,
+                                    impact_velocity,
+                                ],
+                                axis=1,
+                            )
+
+                            u_sampled = u_flat[indices]
+                            x_data_list.append(torch.tensor(x_sampled, dtype=torch.float32))
+                            u_data_list.append(torch.tensor(u_sampled, dtype=torch.float32))
     
     x_data = torch.cat(x_data_list, dim=0)
     u_data = torch.cat(u_data_list, dim=0)
+
+    if cache_enabled:
+        os.makedirs(cache_dir, exist_ok=True)
+        torch.save({"x": x_data.cpu(), "u": u_data.cpu(), "meta": meta}, cache_path)
+        print(f"  Saved FEM supervision cache: {cache_path}")
     
     print(f"  Loaded {len(x_data)} sparse FEM supervision points")
     return x_data, u_data
 
 
 def sample_domain(n, z_min, z_max):
-    # Uniform sampling
     x = torch.rand(n, 1) * config.Lx
     y = torch.rand(n, 1) * config.Ly
-    t_min, t_max = _get_thickness_range()
-    t = torch.rand(n, 1) * (t_max - t_min) + t_min
-    z = torch.rand(n, 1) * t
-    
-    # Sample Young's Modulus E
-    e_min, e_max = _get_e_range()
-    e = torch.rand(n, 1) * (e_max - e_min) + e_min
-
-    r_min, r_max = _get_restitution_range()
-    restitution = torch.rand(n, 1) * (r_max - r_min) + r_min
-    mu_min, mu_max = _get_friction_range()
-    friction = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
-    v0_min, v0_max = _get_impact_velocity_range()
-    impact_velocity = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
-
-    return torch.cat([x, y, z, e, t, restitution, friction, impact_velocity], dim=1)
+    e1, e2, e3, t1, t2, t3, restitution, friction, impact_velocity = _sample_param_columns(n)
+    t_total = t1 + t2 + t3
+    z = torch.rand(n, 1) * t_total
+    return torch.cat([x, y, z, e1, t1, e2, t2, e3, t3, restitution, friction, impact_velocity], dim=1)
 
 def sample_domain_under_patch(n, z_min, z_max):
-    """Sample interior points directly under the load patch."""
     x_min, x_max = config.LOAD_PATCH_X
     y_min, y_max = config.LOAD_PATCH_Y
-    x = torch.rand(n, 1) * (x_max - x_min) + x_min
-    y = torch.rand(n, 1) * (y_max - y_min) + y_min
-    t_min, t_max = _get_thickness_range()
-    t = torch.rand(n, 1) * (t_max - t_min) + t_min
-    z = torch.rand(n, 1) * t
-    e_min, e_max = _get_e_range()
-    e = torch.rand(n, 1) * (e_max - e_min) + e_min
-    r_min, r_max = _get_restitution_range()
-    restitution = torch.rand(n, 1) * (r_max - r_min) + r_min
-    mu_min, mu_max = _get_friction_range()
-    friction = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
-    v0_min, v0_max = _get_impact_velocity_range()
-    impact_velocity = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
-    return torch.cat([x, y, z, e, t, restitution, friction, impact_velocity], dim=1)
-
-def sample_domain_under_patch(n, z_min, z_max):
-    """Sample interior points directly under the load patch."""
-    x_min, x_max = config.LOAD_PATCH_X
-    y_min, y_max = config.LOAD_PATCH_Y
-    x = torch.rand(n, 1) * (x_max - x_min) + x_min
-    y = torch.rand(n, 1) * (y_max - y_min) + y_min
-    z = torch.rand(n, 1) * (z_max - z_min) + z_min
-    return torch.cat([x, y, z], dim=1)
+    bias_frac = float(getattr(config, "PATCH_CENTER_BIAS_FRACTION", 0.0))
+    bias_frac = max(0.0, min(bias_frac, 1.0))
+    n_bias = int(n * bias_frac)
+    n_uniform = n - n_bias
+    if n_bias > 0:
+        shape = float(getattr(config, "PATCH_CENTER_BIAS_SHAPE", 2.0))
+        alpha = torch.full((n_bias, 1), shape)
+        beta = torch.full((n_bias, 1), shape)
+        center_dist = torch.distributions.Beta(alpha, beta)
+        x_bias = center_dist.sample() * (x_max - x_min) + x_min
+        y_bias = center_dist.sample() * (y_max - y_min) + y_min
+        x_uniform = torch.rand(n_uniform, 1) * (x_max - x_min) + x_min
+        y_uniform = torch.rand(n_uniform, 1) * (y_max - y_min) + y_min
+        x = torch.cat([x_bias, x_uniform], dim=0)
+        y = torch.cat([y_bias, y_uniform], dim=0)
+    else:
+        x = torch.rand(n, 1) * (x_max - x_min) + x_min
+        y = torch.rand(n, 1) * (y_max - y_min) + y_min
+    e1, e2, e3, t1, t2, t3, restitution, friction, impact_velocity = _sample_param_columns(n)
+    t_total = t1 + t2 + t3
+    z = torch.rand(n, 1) * t_total
+    return torch.cat([x, y, z, e1, t1, e2, t2, e3, t3, restitution, friction, impact_velocity], dim=1)
 
 def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
-    """Sample points weighted by residual magnitude."""
+    if n <= 0:
+        return prev_pts.new_empty((0, prev_pts.shape[1]))
     # Check if residuals are too small - fall back to uniform sampling
     if prev_residuals.sum() < 1e-12 or torch.isnan(prev_residuals).any():
         return sample_domain(n, z_min, z_max)
     
     # Normalize residuals to probabilities
-    residual_probs = prev_residuals / prev_residuals.sum()
+    residual_probs = prev_residuals
+    if residual_probs.dim() > 1:
+        residual_probs = residual_probs.mean(dim=1)
+    residual_probs = residual_probs.reshape(-1)
+    residual_probs = residual_probs / residual_probs.sum()
     residual_probs = residual_probs + 1e-10  # Add small epsilon for numerical stability
     residual_probs = residual_probs / residual_probs.sum()  # Renormalize
     
     # Sample indices based on residual weights
+    if n <= 0:
+        return prev_pts.new_empty((0, prev_pts.shape[1]))
     indices = torch.multinomial(residual_probs, n, replacement=True)
     sampled_pts = prev_pts[indices]
     
@@ -220,18 +484,41 @@ def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     noise_x = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Lx
     noise_y = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Ly
     e_min, e_max = _get_e_range()
-    t_min, t_max = _get_thickness_range()
     r_min, r_max = _get_restitution_range()
     mu_min, mu_max = _get_friction_range()
     v0_min, v0_max = _get_impact_velocity_range()
-    noise_z = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (t_max - t_min)
-    noise_e = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (e_max - e_min)
-    noise_t = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (t_max - t_min)
+    z_span = max(z_max - z_min, 1e-6)
+    noise_z = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * z_span
+    t1_min, t1_max = _get_t1_range()
+    t2_min, t2_max = _get_t2_range()
+    t3_min, t3_max = _get_t3_range()
+    noise_e1 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (e_max - e_min)
+    noise_e2 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (e_max - e_min)
+    noise_e3 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (e_max - e_min)
+    noise_t1 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (t1_max - t1_min)
+    noise_t2 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (t2_max - t2_min)
+    noise_t3 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (t3_max - t3_min)
     noise_r = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (r_max - r_min)
     noise_mu = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (mu_max - mu_min)
     noise_v0 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (v0_max - v0_min)
 
-    noise = torch.cat([noise_x, noise_y, noise_z, noise_e, noise_t, noise_r, noise_mu, noise_v0], dim=1)
+    noise = torch.cat(
+        [
+            noise_x,
+            noise_y,
+            noise_z,
+            noise_e1,
+            noise_t1,
+            noise_e2,
+            noise_t2,
+            noise_e3,
+            noise_t3,
+            noise_r,
+            noise_mu,
+            noise_v0,
+        ],
+        dim=1,
+    )
     
     new_pts = sampled_pts + noise
     
@@ -239,12 +526,16 @@ def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     new_pts[:, 0] = torch.clamp(new_pts[:, 0], 0, config.Lx)
     new_pts[:, 1] = torch.clamp(new_pts[:, 1], 0, config.Ly)
     new_pts[:, 3] = torch.clamp(new_pts[:, 3], e_min, e_max)
-    new_pts[:, 4] = torch.clamp(new_pts[:, 4], t_min, t_max)
-    new_pts[:, 5] = torch.clamp(new_pts[:, 5], r_min, r_max)
-    new_pts[:, 6] = torch.clamp(new_pts[:, 6], mu_min, mu_max)
-    new_pts[:, 7] = torch.clamp(new_pts[:, 7], v0_min, v0_max)
-    new_pts[:, 2] = torch.maximum(new_pts[:, 2], torch.zeros_like(new_pts[:, 2]))
-    new_pts[:, 2] = torch.minimum(new_pts[:, 2], new_pts[:, 4])
+    new_pts[:, 5] = torch.clamp(new_pts[:, 5], e_min, e_max)
+    new_pts[:, 7] = torch.clamp(new_pts[:, 7], e_min, e_max)
+    new_pts[:, 4] = torch.clamp(new_pts[:, 4], t1_min, t1_max)
+    new_pts[:, 6] = torch.clamp(new_pts[:, 6], t2_min, t2_max)
+    new_pts[:, 8] = torch.clamp(new_pts[:, 8], t3_min, t3_max)
+    new_pts[:, 2] = torch.clamp(new_pts[:, 2], min=0.0)
+    new_pts[:, 2] = torch.minimum(new_pts[:, 2], new_pts[:, 4] + new_pts[:, 6] + new_pts[:, 8])
+    new_pts[:, 9] = torch.clamp(new_pts[:, 9], r_min, r_max)
+    new_pts[:, 10] = torch.clamp(new_pts[:, 10], mu_min, mu_max)
+    new_pts[:, 11] = torch.clamp(new_pts[:, 11], v0_min, v0_max)
     
     return new_pts
 
@@ -253,59 +544,39 @@ def sample_boundaries(n, z_min, z_max):
     # Split n among 4 faces
     n_face = n // 4
     
-    e_min, e_max = _get_e_range()
-    t_min, t_max = _get_thickness_range()
-    r_min, r_max = _get_restitution_range()
-    mu_min, mu_max = _get_friction_range()
-    v0_min, v0_max = _get_impact_velocity_range()
     # x=0
     y1 = torch.rand(n_face, 1) * config.Ly
-    t1 = torch.rand(n_face, 1) * (t_max - t_min) + t_min
-    z1 = torch.rand(n_face, 1) * t1
     x1 = torch.zeros(n_face, 1)
-    e1 = torch.rand(n_face, 1) * (e_max - e_min) + e_min
-    r1 = torch.rand(n_face, 1) * (r_max - r_min) + r_min
-    mu1 = torch.rand(n_face, 1) * (mu_max - mu_min) + mu_min
-    v01 = torch.rand(n_face, 1) * (v0_max - v0_min) + v0_min
-    p1 = torch.cat([x1, y1, z1, e1, t1, r1, mu1, v01], dim=1)
+    e11, e12, e13, t11, t12, t13, r1, mu1, v01 = _sample_param_columns(n_face)
+    z1 = torch.rand(n_face, 1) * (t11 + t12 + t13)
+    p1 = torch.cat([x1, y1, z1, e11, t11, e12, t12, e13, t13, r1, mu1, v01], dim=1)
     
     # x=Lx
     y2 = torch.rand(n_face, 1) * config.Ly
-    t2 = torch.rand(n_face, 1) * (t_max - t_min) + t_min
-    z2 = torch.rand(n_face, 1) * t2
     x2 = torch.ones(n_face, 1) * config.Lx
-    e2 = torch.rand(n_face, 1) * (e_max - e_min) + e_min
-    r2 = torch.rand(n_face, 1) * (r_max - r_min) + r_min
-    mu2 = torch.rand(n_face, 1) * (mu_max - mu_min) + mu_min
-    v02 = torch.rand(n_face, 1) * (v0_max - v0_min) + v0_min
-    p2 = torch.cat([x2, y2, z2, e2, t2, r2, mu2, v02], dim=1)
+    e21, e22, e23, t21, t22, t23, r2, mu2, v02 = _sample_param_columns(n_face)
+    z2 = torch.rand(n_face, 1) * (t21 + t22 + t23)
+    p2 = torch.cat([x2, y2, z2, e21, t21, e22, t22, e23, t23, r2, mu2, v02], dim=1)
     
     # y=0
     x3 = torch.rand(n_face, 1) * config.Lx
-    t3 = torch.rand(n_face, 1) * (t_max - t_min) + t_min
-    z3 = torch.rand(n_face, 1) * t3
     y3 = torch.zeros(n_face, 1)
-    e3 = torch.rand(n_face, 1) * (e_max - e_min) + e_min
-    r3 = torch.rand(n_face, 1) * (r_max - r_min) + r_min
-    mu3 = torch.rand(n_face, 1) * (mu_max - mu_min) + mu_min
-    v03 = torch.rand(n_face, 1) * (v0_max - v0_min) + v0_min
-    p3 = torch.cat([x3, y3, z3, e3, t3, r3, mu3, v03], dim=1)
+    e31, e32, e33, t31, t32, t33, r3, mu3, v03 = _sample_param_columns(n_face)
+    z3 = torch.rand(n_face, 1) * (t31 + t32 + t33)
+    p3 = torch.cat([x3, y3, z3, e31, t31, e32, t32, e33, t33, r3, mu3, v03], dim=1)
     
     # y=Ly
     x4 = torch.rand(n_face, 1) * config.Lx
-    t4 = torch.rand(n_face, 1) * (t_max - t_min) + t_min
-    z4 = torch.rand(n_face, 1) * t4
     y4 = torch.ones(n_face, 1) * config.Ly
-    e4 = torch.rand(n_face, 1) * (e_max - e_min) + e_min
-    r4 = torch.rand(n_face, 1) * (r_max - r_min) + r_min
-    mu4 = torch.rand(n_face, 1) * (mu_max - mu_min) + mu_min
-    v04 = torch.rand(n_face, 1) * (v0_max - v0_min) + v0_min
-    p4 = torch.cat([x4, y4, z4, e4, t4, r4, mu4, v04], dim=1)
+    e41, e42, e43, t41, t42, t43, r4, mu4, v04 = _sample_param_columns(n_face)
+    z4 = torch.rand(n_face, 1) * (t41 + t42 + t43)
+    p4 = torch.cat([x4, y4, z4, e41, t41, e42, t42, e43, t43, r4, mu4, v04], dim=1)
     
     return torch.cat([p1, p2, p3, p4], dim=0)
 
 def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
-    """Sample boundary points weighted by BC residual."""
+    if n <= 0:
+        return prev_pts.new_empty((0, prev_pts.shape[1]))
     # Check if residuals are too small - fall back to uniform sampling
     if prev_residuals.sum() < 1e-12 or torch.isnan(prev_residuals).any():
         return sample_boundaries(n, z_min, z_max)
@@ -322,75 +593,88 @@ def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     
     # Add noise to E for all points
     e_min, e_max = _get_e_range()
-    t_min, t_max = _get_thickness_range()
+    t1_min, t1_max = _get_t1_range()
+    t2_min, t2_max = _get_t2_range()
+    t3_min, t3_max = _get_t3_range()
     r_min, r_max = _get_restitution_range()
     mu_min, mu_max = _get_friction_range()
     v0_min, v0_max = _get_impact_velocity_range()
-    noise_e = (torch.rand(n) - 0.5) * 2 * noise_scale * (e_max - e_min)
-    new_pts[:, 3] += noise_e
-    noise_t = (torch.rand(n) - 0.5) * 2 * noise_scale * (t_max - t_min)
-    new_pts[:, 4] += noise_t
+    noise_e1 = (torch.rand(n) - 0.5) * 2 * noise_scale * (e_max - e_min)
+    new_pts[:, 3] += noise_e1
+    noise_e2 = (torch.rand(n) - 0.5) * 2 * noise_scale * (e_max - e_min)
+    new_pts[:, 5] += noise_e2
+    noise_e3 = (torch.rand(n) - 0.5) * 2 * noise_scale * (e_max - e_min)
+    new_pts[:, 7] += noise_e3
+    noise_t1 = (torch.rand(n) - 0.5) * 2 * noise_scale * (t1_max - t1_min)
+    noise_t2 = (torch.rand(n) - 0.5) * 2 * noise_scale * (t2_max - t2_min)
+    new_pts[:, 4] += noise_t1
+    new_pts[:, 6] += noise_t2
+    noise_t3 = (torch.rand(n) - 0.5) * 2 * noise_scale * (t3_max - t3_min)
+    new_pts[:, 8] += noise_t3
     noise_r = (torch.rand(n) - 0.5) * 2 * noise_scale * (r_max - r_min)
-    new_pts[:, 5] += noise_r
+    new_pts[:, 9] += noise_r
     noise_mu = (torch.rand(n) - 0.5) * 2 * noise_scale * (mu_max - mu_min)
-    new_pts[:, 6] += noise_mu
+    new_pts[:, 10] += noise_mu
     noise_v0 = (torch.rand(n) - 0.5) * 2 * noise_scale * (v0_max - v0_min)
-    new_pts[:, 7] += noise_v0
+    new_pts[:, 11] += noise_v0
     
     # For each face, perturb only the non-fixed coordinates
+    z_span = max(z_max - z_min, 1e-6)
     for i in range(n):
         pt = new_pts[i]
-        t_val = torch.clamp(pt[4], t_min, t_max)
         if torch.abs(pt[0]) < 1e-6:  # x=0 face
             new_pts[i, 1] += (torch.rand((), device=new_pts.device) - 0.5) * 2 * noise_scale * config.Ly
-            new_pts[i, 2] += (torch.rand((), device=new_pts.device) - 0.5) * 2 * noise_scale * t_val
+            new_pts[i, 2] += (torch.rand((), device=new_pts.device) - 0.5) * 2 * noise_scale * z_span
             new_pts[i, 0] = 0.0
         elif torch.abs(pt[0] - config.Lx) < 1e-6:  # x=Lx face
             new_pts[i, 1] += (torch.rand((), device=new_pts.device) - 0.5) * 2 * noise_scale * config.Ly
-            new_pts[i, 2] += (torch.rand((), device=new_pts.device) - 0.5) * 2 * noise_scale * t_val
+            new_pts[i, 2] += (torch.rand((), device=new_pts.device) - 0.5) * 2 * noise_scale * z_span
             new_pts[i, 0] = config.Lx
         elif torch.abs(pt[1]) < 1e-6:  # y=0 face
             new_pts[i, 0] += (torch.rand((), device=new_pts.device) - 0.5) * 2 * noise_scale * config.Lx
-            new_pts[i, 2] += (torch.rand((), device=new_pts.device) - 0.5) * 2 * noise_scale * t_val
+            new_pts[i, 2] += (torch.rand((), device=new_pts.device) - 0.5) * 2 * noise_scale * z_span
             new_pts[i, 1] = 0.0
         elif torch.abs(pt[1] - config.Ly) < 1e-6:  # y=Ly face
             new_pts[i, 0] += (torch.rand((), device=new_pts.device) - 0.5) * 2 * noise_scale * config.Lx
-            new_pts[i, 2] += (torch.rand((), device=new_pts.device) - 0.5) * 2 * noise_scale * t_val
+            new_pts[i, 2] += (torch.rand((), device=new_pts.device) - 0.5) * 2 * noise_scale * z_span
             new_pts[i, 1] = config.Ly
     
     # Clamp
     new_pts[:, 0] = torch.clamp(new_pts[:, 0], 0, config.Lx)
     new_pts[:, 1] = torch.clamp(new_pts[:, 1], 0, config.Ly)
     new_pts[:, 3] = torch.clamp(new_pts[:, 3], e_min, e_max)
-    new_pts[:, 4] = torch.clamp(new_pts[:, 4], t_min, t_max)
-    new_pts[:, 5] = torch.clamp(new_pts[:, 5], r_min, r_max)
-    new_pts[:, 6] = torch.clamp(new_pts[:, 6], mu_min, mu_max)
-    new_pts[:, 7] = torch.clamp(new_pts[:, 7], v0_min, v0_max)
-    new_pts[:, 2] = torch.maximum(new_pts[:, 2], torch.zeros_like(new_pts[:, 2]))
-    new_pts[:, 2] = torch.minimum(new_pts[:, 2], new_pts[:, 4])
+    new_pts[:, 5] = torch.clamp(new_pts[:, 5], e_min, e_max)
+    new_pts[:, 7] = torch.clamp(new_pts[:, 7], e_min, e_max)
+    new_pts[:, 4] = torch.clamp(new_pts[:, 4], t1_min, t1_max)
+    new_pts[:, 6] = torch.clamp(new_pts[:, 6], t2_min, t2_max)
+    new_pts[:, 2] = torch.clamp(new_pts[:, 2], min=0.0)
+    new_pts[:, 8] = torch.clamp(new_pts[:, 8], t3_min, t3_max)
+    new_pts[:, 2] = torch.minimum(new_pts[:, 2], new_pts[:, 4] + new_pts[:, 6] + new_pts[:, 8])
+    new_pts[:, 9] = torch.clamp(new_pts[:, 9], r_min, r_max)
+    new_pts[:, 10] = torch.clamp(new_pts[:, 10], mu_min, mu_max)
+    new_pts[:, 11] = torch.clamp(new_pts[:, 11], v0_min, v0_max)
     
     return new_pts
 
 def sample_top_load(n):
-    """Sample points on load patch only."""
     # Loaded Patch: Lx/3 < x < 2Lx/3 AND Ly/3 < y < 2Ly/3
     xl = torch.rand(n, 1) * (config.Lx/3) + config.Lx/3
     yl = torch.rand(n, 1) * (config.Ly/3) + config.Ly/3
-    t_min, t_max = _get_thickness_range()
-    tl = torch.rand(n, 1) * (t_max - t_min) + t_min
-    zl = tl
-    e_min, e_max = _get_e_range()
-    el = torch.rand(n, 1) * (e_max - e_min) + e_min
-    r_min, r_max = _get_restitution_range()
-    rl = torch.rand(n, 1) * (r_max - r_min) + r_min
-    mu_min, mu_max = _get_friction_range()
-    mul = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
-    v0_min, v0_max = _get_impact_velocity_range()
-    v0l = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
-    return torch.cat([xl, yl, zl, el, tl, rl, mul, v0l], dim=1)
+    bias_frac = float(getattr(config, "PATCH_CENTER_BIAS_FRACTION", 0.0))
+    bias_frac = max(0.0, min(bias_frac, 1.0))
+    n_bias = int(n * bias_frac)
+    if n_bias > 0:
+        shape = float(getattr(config, "PATCH_CENTER_BIAS_SHAPE", 2.0))
+        alpha = torch.full((n_bias, 1), shape)
+        beta = torch.full((n_bias, 1), shape)
+        center_dist = torch.distributions.Beta(alpha, beta)
+        xl[:n_bias] = center_dist.sample() * (config.Lx/3) + config.Lx/3
+        yl[:n_bias] = center_dist.sample() * (config.Ly/3) + config.Ly/3
+    e1l, e2l, e3l, t1l, t2l, t3l, rl, mul, v0l = _sample_param_columns(n)
+    zl = (t1l + t2l + t3l).clone()
+    return torch.cat([xl, yl, zl, e1l, t1l, e2l, t2l, e3l, t3l, rl, mul, v0l], dim=1)
 
 def sample_top_free(n):
-    """Sample points on free top surface (outside load patch)."""
     # Rejection sampling for points outside patch
     pts_free_list = []
     count = 0
@@ -405,18 +689,9 @@ def sample_top_free(n):
         mask_free = ~in_patch.squeeze()
         xf, yf = x[mask_free], y[mask_free]
         if len(xf) > 0:
-            t_min, t_max = _get_thickness_range()
-            tf = torch.rand(len(xf), 1) * (t_max - t_min) + t_min
-            zf = tf
-            e_min, e_max = _get_e_range()
-            ef = torch.rand(len(xf), 1) * (e_max - e_min) + e_min
-            r_min, r_max = _get_restitution_range()
-            rf = torch.rand(len(xf), 1) * (r_max - r_min) + r_min
-            mu_min, mu_max = _get_friction_range()
-            muf = torch.rand(len(xf), 1) * (mu_max - mu_min) + mu_min
-            v0_min, v0_max = _get_impact_velocity_range()
-            v0f = torch.rand(len(xf), 1) * (v0_max - v0_min) + v0_min
-            batch_pts = torch.cat([xf, yf, zf, ef, tf, rf, muf, v0f], dim=1)
+            e1f, e2f, e3f, t1f, t2f, t3f, rf, muf, v0f = _sample_param_columns(len(xf))
+            zf = (t1f + t2f + t3f).clone()
+            batch_pts = torch.cat([xf, yf, zf, e1f, t1f, e2f, t2f, e3f, t3f, rf, muf, v0f], dim=1)
             pts_free_list.append(batch_pts)
             count += len(xf)
     
@@ -424,7 +699,8 @@ def sample_top_free(n):
     return pts_free
 
 def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_load_patch=False, is_load_patch=False):
-    """Sample surface points weighted by traction residual."""
+    if n <= 0:
+        return prev_pts.new_empty((0, prev_pts.shape[1]))
     # Check if residuals are too small - fall back to uniform sampling
     if prev_residuals.sum() < 1e-12 or torch.isnan(prev_residuals).any():
         if constrain_load_patch and is_load_patch:
@@ -435,21 +711,13 @@ def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_
             # General surface sampling
             x = torch.rand(n, 1) * config.Lx
             y = torch.rand(n, 1) * config.Ly
-            t_min, t_max = _get_thickness_range()
-            t = torch.rand(n, 1) * (t_max - t_min) + t_min
+            e1, e2, e3, t1, t2, t3, r, mu, v0 = _sample_param_columns(n)
+            t_total = t1 + t2 + t3
             if z_val == 0.0:
                 z = torch.zeros(n, 1)
             else:
-                z = t
-            e_min, e_max = _get_e_range()
-            e = torch.rand(n, 1) * (e_max - e_min) + e_min
-            r_min, r_max = _get_restitution_range()
-            r = torch.rand(n, 1) * (r_max - r_min) + r_min
-            mu_min, mu_max = _get_friction_range()
-            mu = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
-            v0_min, v0_max = _get_impact_velocity_range()
-            v0 = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
-            return torch.cat([x, y, z, e, t, r, mu, v0], dim=1)
+                z = t_total.clone()
+            return torch.cat([x, y, z, e1, t1, e2, t2, e3, t3, r, mu, v0], dim=1)
     
     residual_probs = prev_residuals / prev_residuals.sum()
     residual_probs = residual_probs + 1e-10
@@ -461,31 +729,57 @@ def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_
     noise_x = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Lx
     noise_y = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Ly
     e_min, e_max = _get_e_range()
-    t_min, t_max = _get_thickness_range()
+    t1_min, t1_max = _get_t1_range()
+    t2_min, t2_max = _get_t2_range()
+    t3_min, t3_max = _get_t3_range()
     r_min, r_max = _get_restitution_range()
     mu_min, mu_max = _get_friction_range()
     v0_min, v0_max = _get_impact_velocity_range()
-    noise_e = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (e_max - e_min)
-    noise_t = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (t_max - t_min)
+    noise_e1 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (e_max - e_min)
+    noise_e2 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (e_max - e_min)
+    noise_e3 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (e_max - e_min)
+    noise_t1 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (t1_max - t1_min)
+    noise_t2 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (t2_max - t2_min)
+    noise_t3 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (t3_max - t3_min)
     noise_r = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (r_max - r_min)
     noise_mu = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (mu_max - mu_min)
     noise_v0 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (v0_max - v0_min)
-    noise = torch.cat([noise_x, noise_y, torch.zeros(n, 1), noise_e, noise_t, noise_r, noise_mu, noise_v0], dim=1)
+    noise = torch.cat(
+        [
+            noise_x,
+            noise_y,
+            torch.zeros(n, 1),
+            noise_e1,
+            noise_t1,
+            noise_e2,
+            noise_t2,
+            noise_e3,
+            noise_t3,
+            noise_r,
+            noise_mu,
+            noise_v0,
+        ],
+        dim=1,
+    )
     
     new_pts = sampled_pts + noise
-    new_pts[:, 4] = torch.clamp(new_pts[:, 4], t_min, t_max)
+    new_pts[:, 4] = torch.clamp(new_pts[:, 4], t1_min, t1_max)
+    new_pts[:, 6] = torch.clamp(new_pts[:, 6], t2_min, t2_max)
+    new_pts[:, 8] = torch.clamp(new_pts[:, 8], t3_min, t3_max)
     if z_val == 0.0:
         new_pts[:, 2] = 0.0
     else:
-        new_pts[:, 2] = new_pts[:, 4]  # Fix z to top surface
+        new_pts[:, 2] = new_pts[:, 4] + new_pts[:, 6] + new_pts[:, 8]
     
     # Clamp to domain
     new_pts[:, 0] = torch.clamp(new_pts[:, 0], 0, config.Lx)
     new_pts[:, 1] = torch.clamp(new_pts[:, 1], 0, config.Ly)
     new_pts[:, 3] = torch.clamp(new_pts[:, 3], e_min, e_max)
-    new_pts[:, 5] = torch.clamp(new_pts[:, 5], r_min, r_max)
-    new_pts[:, 6] = torch.clamp(new_pts[:, 6], mu_min, mu_max)
-    new_pts[:, 7] = torch.clamp(new_pts[:, 7], v0_min, v0_max)
+    new_pts[:, 5] = torch.clamp(new_pts[:, 5], e_min, e_max)
+    new_pts[:, 7] = torch.clamp(new_pts[:, 7], e_min, e_max)
+    new_pts[:, 9] = torch.clamp(new_pts[:, 9], r_min, r_max)
+    new_pts[:, 10] = torch.clamp(new_pts[:, 10], mu_min, mu_max)
+    new_pts[:, 11] = torch.clamp(new_pts[:, 11], v0_min, v0_max)
     
     # If constrained to load patch or free region
     if constrain_load_patch:
@@ -529,61 +823,68 @@ def sample_top(n):
     return pts_load, pts_free
 
 def sample_interface(n, z_val):
-    # z = z_val
     x = torch.rand(n, 1) * config.Lx
     y = torch.rand(n, 1) * config.Ly
-    t_min, t_max = _get_thickness_range()
-    t = torch.rand(n, 1) * (t_max - t_min) + t_min
-    z = torch.minimum(torch.ones(n, 1) * z_val, t)
-    e = torch.rand(n, 1) * (config.E_RANGE[1] - config.E_RANGE[0]) + config.E_RANGE[0]
-    r_min, r_max = _get_restitution_range()
-    r = torch.rand(n, 1) * (r_max - r_min) + r_min
-    mu_min, mu_max = _get_friction_range()
-    mu = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
-    v0_min, v0_max = _get_impact_velocity_range()
-    v0 = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
-    return torch.cat([x, y, z, e, t, r, mu, v0], dim=1)
+    e1, e2, e3, t1, t2, t3, r, mu, v0 = _sample_param_columns(n)
+    t_total = t1 + t2 + t3
+
+    n_if1 = n // 2
+    pick_if1 = torch.zeros(n, 1, dtype=torch.bool)
+    if n_if1 > 0:
+        pick_if1[:n_if1] = True
+        pick_if1 = pick_if1[torch.randperm(n)]
+    z_if1 = t1
+    z_if2 = t1 + t2
+    z = torch.where(pick_if1, z_if1, z_if2)
+    z = torch.clamp(z, min=0.0)
+    z = torch.minimum(z, t_total)
+    return torch.cat([x, y, z, e1, t1, e2, t2, e3, t3, r, mu, v0], dim=1)
+
+def sample_interface_band(n, z_center, band, z_min=None, z_max=None):
+    if z_min is None:
+        z_min = 0.0
+    x = torch.rand(n, 1) * config.Lx
+    y = torch.rand(n, 1) * config.Ly
+    e1, e2, e3, t1, t2, t3, r, mu, v0 = _sample_param_columns(n)
+    t_total = t1 + t2 + t3
+
+    n_if1 = n // 2
+    pick_if1 = torch.zeros(n, 1, dtype=torch.bool)
+    if n_if1 > 0:
+        pick_if1[:n_if1] = True
+        pick_if1 = pick_if1[torch.randperm(n)]
+    z_center_local = torch.where(pick_if1, t1, t1 + t2)
+    z_low_local = torch.clamp(z_center_local - band, min=0.0)
+    z_high_local = torch.clamp(z_center_local + band, max=t_total)
+    z = torch.rand(n, 1) * torch.clamp(z_high_local - z_low_local, min=1e-6) + z_low_local
+    return torch.cat([x, y, z, e1, t1, e2, t2, e3, t3, r, mu, v0], dim=1)
 
 def sample_bottom(n):
-    """Sample points on bottom surface (z=0)."""
     x_bot = torch.rand(n, 1) * config.Lx
     y_bot = torch.rand(n, 1) * config.Ly
     z_bot = torch.zeros(n, 1)
-    e_min, e_max = _get_e_range()
-    e_bot = torch.rand(n, 1) * (e_max - e_min) + e_min
-    t_min, t_max = _get_thickness_range()
-    t_bot = torch.rand(n, 1) * (t_max - t_min) + t_min
-    r_min, r_max = _get_restitution_range()
-    r_bot = torch.rand(n, 1) * (r_max - r_min) + r_min
-    mu_min, mu_max = _get_friction_range()
-    mu_bot = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
-    v0_min, v0_max = _get_impact_velocity_range()
-    v0_bot = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
-    return torch.cat([x_bot, y_bot, z_bot, e_bot, t_bot, r_bot, mu_bot, v0_bot], dim=1)
+    e1_bot, e2_bot, e3_bot, t1_bot, t2_bot, t3_bot, r_bot, mu_bot, v0_bot = _sample_param_columns(n)
+    return torch.cat([x_bot, y_bot, z_bot, e1_bot, t1_bot, e2_bot, t2_bot, e3_bot, t3_bot, r_bot, mu_bot, v0_bot], dim=1)
 
 def get_data(prev_data=None, residuals=None):
-    """Generate collocation points with optional residual-based sampling.
-    
-    Args:
-        prev_data: Previous training data dict (optional)
-        residuals: Dict of residuals for each data type (optional)
-                  Keys: 'interior', 'sides', 'top_load', 'top_free', 'bottom'
-                  Values: Tensor of residual magnitudes
-    
-    Returns:
-        Dictionary of training data
-    """
-    z_min, z_max = config.Layer_Interfaces[0], config.Layer_Interfaces[1]
+    t1_min, t1_max = _get_t1_range()
+    t2_min, t2_max = _get_t2_range()
+    t3_min, t3_max = _get_t3_range()
+    z_min, z_max = 0.0, float(t1_max + t2_max + t3_max)
     
     # Decide whether to use residual-based sampling (50% uniform, 50% residual-based)
     use_residual = (prev_data is not None and residuals is not None)
     
+    interface_frac = float(getattr(config, "INTERFACE_SAMPLE_FRACTION", 0.0))
+    interface_band = float(getattr(config, "INTERFACE_BAND", 0.0))
+    interface_frac = max(0.0, min(interface_frac, 0.9))
+    n_interface = int(config.N_INTERIOR * interface_frac) if interface_frac > 0.0 else 0
     n_patch = int(config.N_INTERIOR * config.UNDER_PATCH_FRACTION)
     if n_patch < 0:
         n_patch = 0
-    if n_patch > config.N_INTERIOR:
-        n_patch = config.N_INTERIOR
-    n_interior = config.N_INTERIOR - n_patch
+    if n_patch > (config.N_INTERIOR - n_interface):
+        n_patch = max(0, config.N_INTERIOR - n_interface)
+    n_interior = config.N_INTERIOR - n_patch - n_interface
     
     if use_residual:
         n_uniform = n_interior // 2
@@ -599,6 +900,9 @@ def get_data(prev_data=None, residuals=None):
         if n_patch > 0:
             interior_patch = sample_domain_under_patch(n_patch, z_min, z_max)
             interior = torch.cat([interior, interior_patch], dim=0)
+        if n_interface > 0 and interface_band > 0.0:
+            interface_pts = sample_interface_band(n_interface, None, interface_band, z_min=z_min, z_max=z_max)
+            interior = torch.cat([interior, interface_pts], dim=0)
         
         # BC Sides: half uniform, half residual-based
         n_uniform_bc = config.N_SIDES // 2
@@ -615,7 +919,8 @@ def get_data(prev_data=None, residuals=None):
         n_residual_load = config.N_TOP_LOAD - n_uniform_load
         load_uniform = sample_top_load(n_uniform_load)
         load_residual = sample_surface_residual_based(
-            n_residual_load, config.H,
+            n_residual_load,
+            z_max,
             prev_data['top_load'], residuals['top_load'],
             constrain_load_patch=True, is_load_patch=True
         )
@@ -626,7 +931,8 @@ def get_data(prev_data=None, residuals=None):
         n_residual_free = config.N_TOP_FREE - n_uniform_free
         free_uniform = sample_top_free(n_uniform_free)
         free_residual = sample_surface_residual_based(
-            n_residual_free, config.H,
+            n_residual_free,
+            z_max,
             prev_data['top_free'], residuals['top_free'],
             constrain_load_patch=True, is_load_patch=False
         )
@@ -650,15 +956,21 @@ def get_data(prev_data=None, residuals=None):
             interior = torch.cat([interior_uniform, interior_patch], dim=0)
         else:
             interior = interior_uniform
+        if n_interface > 0 and interface_band > 0.0:
+            interface_pts = sample_interface_band(n_interface, None, interface_band, z_min=z_min, z_max=z_max)
+            interior = torch.cat([interior, interface_pts], dim=0)
         bc_sides = sample_boundaries(config.N_SIDES, z_min, z_max)
         top_load = sample_top_load(config.N_TOP_LOAD)
         top_free = sample_top_free(config.N_TOP_FREE)
         bot_free = sample_bottom(config.N_BOTTOM)
+
+    interface = sample_interface(config.N_INTERFACE, 0.0)
     
     return {
         'interior': [interior],
         'sides': [bc_sides],
         'top_load': top_load,
         'top_free': top_free,
-        'bottom': bot_free
+        'bottom': bot_free,
+        'interface': interface
     }

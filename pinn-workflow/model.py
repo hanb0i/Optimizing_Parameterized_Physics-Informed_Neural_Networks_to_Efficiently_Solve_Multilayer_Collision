@@ -1,37 +1,129 @@
 import torch
 import torch.nn as nn
-import numpy as np
 import pinn_config as config
 
 
-class FourierFeatures(nn.Module):
-    def __init__(self, input_dim, mapping_size, scale):
-        super().__init__()
-        self.B = nn.Parameter(torch.randn(input_dim, mapping_size) * scale, requires_grad=False)
+def _adapt_first_layer_weight(src_w, tgt_w):
+    if src_w.shape[0] != tgt_w.shape[0]:
+        return None
 
-    def forward(self, x):
-        # x: (N, 3)
-        x_norm = x.clone()
-        x_norm[:, 2] = x_norm[:, 2]  # z is already normalized to [0, 1]
-        x_proj = (2.0 * np.pi * x_norm) @ self.B
-        return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
+    adapted = torch.zeros_like(tgt_w)
+
+    if src_w.shape[1] == 12 and tgt_w.shape[1] >= 12:
+        adapted[:, :12] = src_w[:, :12]
+        return adapted
+
+    # Two-layer layout (15 inputs) -> three-layer layout (21 inputs).
+    # Old (15):
+    # [x,y,z_hat, E1,t1,E2,t2, r,mu,v0, sd1,|sd1|,soft1, zeta^3, bend]
+    # New (21):
+    # [x,y,z_hat, E1,t1,E2,t2,E3,t3, r,mu,v0, sd1,|sd1|,soft1, sd2,|sd2|,soft2, zeta^3, bend, soft1-soft2]
+    if src_w.shape[1] == 15 and tgt_w.shape[1] >= 21:
+        adapted[:, 0:7] = src_w[:, 0:7]
+        adapted[:, 7:8] = src_w[:, 5:6]  # E3 <- E2
+        adapted[:, 8:9] = src_w[:, 6:7]  # t3 <- t2
+        adapted[:, 9:12] = src_w[:, 7:10]  # r,mu,v0
+        adapted[:, 12:15] = src_w[:, 10:13]  # sd1,|sd1|,soft1
+        adapted[:, 15:18] = src_w[:, 10:13]  # sd2,|sd2|,soft2 (copy)
+        adapted[:, 18:20] = src_w[:, 13:15]  # zeta^3,bend
+        # soft1-soft2 left at 0
+        return adapted
+
+    # Legacy semantic layout:
+    # [x, y, z_hat, E, t, r, mu, v0, extra1, extra2, extra3]
+    # Current semantic layout before thickness parameterization:
+    # [x, y, z_hat, E1, E2, r, mu, v0, sd, |sd|, soft]
+    # New semantic layout:
+    # [x, y, z_hat, E1, t1, E2, t2, r, mu, v0, sd, |sd|, soft, zeta^3, bend]
+    if src_w.shape[1] == 14 and tgt_w.shape[1] >= 15:
+        adapted[:, 0:3] = src_w[:, 0:3]
+        adapted[:, 3:4] = src_w[:, 3:4]
+        adapted[:, 4:5] = 0.5 * src_w[:, 5:6]
+        adapted[:, 5:6] = src_w[:, 4:5]
+        adapted[:, 6:7] = 0.5 * src_w[:, 5:6]
+        adapted[:, 7:10] = src_w[:, 6:9]
+        adapted[:, 10:15] = src_w[:, 9:14]
+        return adapted
+
+    if src_w.shape[1] == 11 and tgt_w.shape[1] >= 15:
+        adapted[:, 0:3] = src_w[:, 0:3]
+        adapted[:, 3:4] = src_w[:, 3:4]
+        adapted[:, 4:5] = 0.5 * src_w[:, 3:4]
+        adapted[:, 5:6] = src_w[:, 4:5]
+        adapted[:, 6:7] = 0.5 * src_w[:, 3:4]
+        adapted[:, 7:10] = src_w[:, 5:8]
+        adapted[:, 10:13] = src_w[:, 8:11]
+        return adapted
+
+    if src_w.shape[1] == 11:
+        adapted[:, 0:3] = src_w[:, 0:3]
+        adapted[:, 3:4] = 0.5 * src_w[:, 3:4]
+        adapted[:, 4:5] = 0.5 * src_w[:, 3:4]
+        adapted[:, 5:6] = 0.5 * src_w[:, 3:4]
+        adapted[:, 6:8] = src_w[:, 5:7]
+        return adapted
+
+    if src_w.shape[1] == 10 and tgt_w.shape[1] >= 15:
+        adapted[:, 0:3] = src_w[:, 0:3]
+        adapted[:, 3:4] = 0.5 * src_w[:, 3:4]
+        adapted[:, 4:5] = 0.5 * src_w[:, 3:4]
+        adapted[:, 5:6] = 0.5 * src_w[:, 3:4]
+        adapted[:, 7:9] = src_w[:, 5:7]
+        return adapted
+
+    if src_w.shape[1] == 10:
+        adapted[:, 0:3] = src_w[:, 0:3]
+        adapted[:, 3:4] = 0.5 * src_w[:, 3:4]
+        adapted[:, 4:5] = 0.5 * src_w[:, 3:4]
+        adapted[:, 5:6] = 0.5 * src_w[:, 3:4]
+        adapted[:, 6:8] = src_w[:, 5:7]
+        return adapted
+
+    if src_w.shape[1] == 8:
+        adapted[:, 0:3] = src_w[:, 0:3]
+        adapted[:, 3:4] = 0.5 * src_w[:, 3:4]
+        adapted[:, 4:5] = 0.5 * src_w[:, 3:4]
+        adapted[:, 5:6] = 0.5 * src_w[:, 3:4]
+        return adapted
+
+    if src_w.shape[1] == 4:
+        adapted[:, 0:3] = src_w[:, 0:3]
+        adapted[:, 3:4] = 0.5 * src_w[:, 3:4]
+        adapted[:, 4:5] = 0.5 * src_w[:, 3:4]
+        adapted[:, 5:6] = 0.5 * src_w[:, 3:4]
+        return adapted
+
+    return None
+
+
+def adapt_legacy_state_dict(state_dict, target_state_dict, remap_same_shape=False):
+    adapted = dict(state_dict)
+    w_key = "layer.net.0.weight"
+    if w_key not in adapted or w_key not in target_state_dict:
+        return adapted
+
+    src_w = adapted[w_key]
+    tgt_w = target_state_dict[w_key]
+    if src_w.shape == tgt_w.shape:
+        if remap_same_shape:
+            remapped = _adapt_first_layer_weight(src_w, tgt_w)
+            if remapped is not None:
+                adapted[w_key] = remapped
+        return adapted
+
+    remapped = _adapt_first_layer_weight(src_w, tgt_w)
+    if remapped is not None:
+        adapted[w_key] = remapped
+    return adapted
+
 
 class LayerNet(nn.Module):
-    def __init__(self, hidden_layers=2, hidden_units=32, activation=nn.Tanh(),
-                 fourier_dim=0, fourier_scale=1.0):
+    def __init__(self, hidden_layers=2, hidden_units=32, activation=nn.Tanh()):
         super().__init__()
         layers = []
-        # Input: x, y, z (and E, thickness, restitution, friction, v0 as extra channels)
-        self.fourier = FourierFeatures(3, fourier_dim, fourier_scale) if fourier_dim > 0 else None
-        
-        # Base input dimension
-        # If fourier: [sin(..), cos(..)] (size 2*fourier_dim) + 5 normalized params
-        # Else: x, y, z_hat + 5 normalized params (size 8)
-        base_dim = (2 * fourier_dim + 5) if fourier_dim > 0 else 8
-        
-        # We add 3 extra physics-informed features: (H/t), (H/t)^2, (H/t)^3
-        # These help the network resolve the 1/t^3 scaling naturally from the PDE data.
-        current_dim = base_dim + 3
+        # Input: x, y, z_hat + 9 normalized params (E1, t1, E2, t2, E3, t3, r, mu, v0)
+        # + derived thickness/interface features.
+        current_dim = 12 + 9
         
         layers.append(nn.Linear(current_dim, hidden_units))
         layers.append(activation)
@@ -40,12 +132,8 @@ class LayerNet(nn.Module):
             layers.append(nn.Linear(hidden_units, hidden_units))
             layers.append(activation)
             
-        # Output: u_x, u_y, u_z (3 dims)
         layers.append(nn.Linear(hidden_units, 3))
-        
         self.net = nn.Sequential(*layers)
-        
-        # Weight initialization
         self._init_weights()
         
     def _init_weights(self):
@@ -55,27 +143,36 @@ class LayerNet(nn.Module):
                 nn.init.constant_(m.bias, 0)
                 
     def forward(self, x):
-        # x shape: (N, 8) -> [x, y, z, E, thickness, restitution, friction, v0]
-        
-        # Use torch.cat to preserve gradient flow
-        # x_scaled = [x, y, z*10, E_norm]
-        
         x_coord = x[:, 0:1]
         y_coord = x[:, 1:2]
         z_coord = x[:, 2:3]
-        e_param = x[:, 3:4]
-        t_param = x[:, 4:5]
-        r_param = x[:, 5:6]
-        mu_param = x[:, 6:7]
-        v0_param = x[:, 7:8]
+        e1_param = x[:, 3:4]
+        t1_param = x[:, 4:5]
+        e2_param = x[:, 5:6]
+        t2_param = x[:, 6:7]
+        e3_param = x[:, 7:8]
+        t3_param = x[:, 8:9]
+        r_param = x[:, 9:10]
+        mu_param = x[:, 10:11]
+        v0_param = x[:, 11:12]
         
         e_min, e_max = config.E_RANGE
         e_span = (e_max - e_min) if (e_max - e_min) != 0 else 1.0
-        e_norm = (e_param - e_min) / e_span
+        e1_norm = (e1_param - e_min) / e_span
+        e2_norm = (e2_param - e_min) / e_span
+        e3_norm = (e3_param - e_min) / e_span
 
-        t_min, t_max = config.THICKNESS_RANGE
-        t_span = (t_max - t_min) if (t_max - t_min) != 0 else 1.0
-        t_norm = (t_param - t_min) / t_span
+        t1_min, t1_max = config.T1_RANGE
+        t1_span = (t1_max - t1_min) if (t1_max - t1_min) != 0 else 1.0
+        t1_norm = (t1_param - t1_min) / t1_span
+
+        t2_min, t2_max = config.T2_RANGE
+        t2_span = (t2_max - t2_min) if (t2_max - t2_min) != 0 else 1.0
+        t2_norm = (t2_param - t2_min) / t2_span
+
+        t3_min, t3_max = config.T3_RANGE
+        t3_span = (t3_max - t3_min) if (t3_max - t3_min) != 0 else 1.0
+        t3_norm = (t3_param - t3_min) / t3_span
 
         r_min, r_max = config.RESTITUTION_RANGE
         r_span = (r_max - r_min) if (r_max - r_min) != 0 else 1.0
@@ -89,43 +186,57 @@ class LayerNet(nn.Module):
         v0_span = (v0_max - v0_min) if (v0_max - v0_min) != 0 else 1.0
         v0_norm = (v0_param - v0_min) / v0_span
 
-        t_safe = torch.clamp(t_param, min=1e-6)
-        z_hat = z_coord / t_safe
+        t_total_safe = torch.clamp(t1_param + t2_param + t3_param, min=1e-6)
+        z_hat = z_coord / t_total_safe
+        sd1_norm = (z_coord - t1_param) / t_total_safe
+        sd2_norm = (z_coord - (t1_param + t2_param)) / t_total_safe
+        zeta = 2.0 * z_hat - 1.0
+        beta = float(getattr(config, "INTERFACE_FEATURE_BETA", 20.0))
+        soft1 = torch.sigmoid(beta * sd1_norm)
+        soft2 = torch.sigmoid(beta * sd2_norm)
+        bend_scale = (float(config.H) / t_total_safe) ** 3
+        bend_max = (float(config.H) / max(float(t1_min + t2_min + t3_min), 1e-6)) ** 3
+        bend_min = (float(config.H) / max(float(t1_max + t2_max + t3_max), 1e-6)) ** 3
+        bend_span = max(bend_max - bend_min, 1e-6)
+        bend_norm = (bend_scale - bend_min) / bend_span
+        extra_feats = torch.cat(
+            [
+                sd1_norm,
+                torch.abs(sd1_norm),
+                soft1,
+                sd2_norm,
+                torch.abs(sd2_norm),
+                soft2,
+                zeta ** 3,
+                bend_norm,
+                (soft1 - soft2),
+            ],
+            dim=1,
+        )
         
-        # Physics-Informed Features: scaling relative to baseline H
-        # This gives the network 'basis functions' that match the expected physics (bending ~ 1/t^3)
-        # using H=0.1 as reference to keep features ~ O(1)
-        # However, for t=0.05, ratio=2, ratio^3=8. This is large but not insane.
-        # But if the network is initialized with small weights, an input of 8 might effectively saturate units or dominate gradients.
-        
-        h_ref = getattr(config, 'H', 0.1)
-        ratio = h_ref / t_safe 
-        
-        # Raw physics scaling features as requested.
-        feat_inv1 = ratio
-        feat_inv2 = ratio ** 2
-        feat_inv3 = ratio ** 3
-        
-        extra_feats = torch.cat([feat_inv1, feat_inv2, feat_inv3], dim=1)
-        
-        if self.fourier is not None:
-            xyz = torch.cat([x_coord, y_coord, z_hat], dim=1)
-            ff = self.fourier(xyz)
-            x_scaled = torch.cat([ff, e_norm, t_norm, r_norm, mu_norm, v0_norm, extra_feats], dim=1)
-        else:
-            x_scaled = torch.cat([x_coord, y_coord, z_hat, e_norm, t_norm, r_norm, mu_norm, v0_norm, extra_feats], dim=1)
-        
+        x_scaled = torch.cat(
+            [
+                x_coord,
+                y_coord,
+                z_hat,
+                e1_norm,
+                t1_norm,
+                e2_norm,
+                t2_norm,
+                e3_norm,
+                t3_norm,
+                r_norm,
+                mu_norm,
+                v0_norm,
+                extra_feats,
+            ],
+            dim=1
+        )
         u_raw = self.net(x_scaled)
         
         if config.USE_HARD_SIDE_BC:
-            # Hard Constraint for Clamped Sides (x=0, x=1, y=0, y=1)
-            # Mask M(x,y) = x(1-x)y(1-y)
-            # Normalized so max value is ~1 (at center x=0.5, y=0.5, val=0.0625 -> *16)
             x_c = x[:, 0:1]
             y_c = x[:, 1:2]
-            
-            # We assume domain is [0,1]x[0,1] based on config.
-            # If config changed Lx, Ly, this should be dynamic, but for now hardcoded matches config.
             mask = x_c * (1.0 - x_c) * y_c * (1.0 - y_c) * 16.0
             u_raw = u_raw * mask
         
@@ -134,25 +245,15 @@ class LayerNet(nn.Module):
 class MultiLayerPINN(nn.Module):
     def __init__(self):
         super().__init__()
-        # Single network for homogeneous material
         self.layer = LayerNet(
             hidden_layers=getattr(config, 'LAYERS', 4),
             hidden_units=getattr(config, 'NEURONS', 64),
-            fourier_dim=config.FOURIER_DIM, 
-            fourier_scale=config.FOURIER_SCALE
         )
         
     def forward(self, x, layer_idx=0):
-        # x: (N, 8) -> [x, y, z, E, thickness, restitution, friction, v0]
-        
-        # 1. Compute the normalized potential/shape 'v'
-        v = self.layer(x)
-        
-        # Return v directly. Physics layer will handle u = v / E
-        return v
+        return self.layer(x)
 
     def predict_all(self, x):
-        # Consistent prediction
         return self.forward(x)
 
     def set_hard_bc(self, use_hard):
