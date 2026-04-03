@@ -7,6 +7,8 @@ uv.lock
 __pycache__/
 *.pyc
 pinn-workflow/visualization_three_layer/
+pinn-workflow-2layer/visualization_two_layer/
+pinn-workflow-2layer/supervision_cache/
 pinn-workflow/supervision_cache/
 pinn-workflow/checkpoints/
 pinn-workflow/surrogate_workflow/outputs/

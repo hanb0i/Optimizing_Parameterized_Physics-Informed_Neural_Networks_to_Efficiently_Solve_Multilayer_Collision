@@ -9,7 +9,10 @@ import torch
 from scipy.interpolate import RegularGridInterpolator
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-PINN_WORKFLOW_DIR = os.path.join(REPO_ROOT, "pinn-workflow")
+PINN_WORKFLOW_DIR = os.path.join(
+    REPO_ROOT,
+    os.getenv("PINN_TWO_LAYER_WORKFLOW_DIR", "pinn-workflow-2layer"),
+)
 FEA_SOLVER_DIR = os.path.join(REPO_ROOT, "fea-workflow", "solver")
 
 if PINN_WORKFLOW_DIR not in sys.path:
@@ -42,8 +45,11 @@ def _ref_params():
 
 def _load_pinn(device):
     pinn = model.MultiLayerPINN().to(device)
-    model_path = os.path.join(PINN_WORKFLOW_DIR, "pinn_model.pth")
-    sd = torch.load(model_path, map_location=device, weights_only=True)
+    model_path = os.getenv("PINN_MODEL_PATH") or os.path.join(PINN_WORKFLOW_DIR, "pinn_model.pth")
+    try:
+        sd = torch.load(model_path, map_location=device, weights_only=True)
+    except TypeError:
+        sd = torch.load(model_path, map_location=device)
     sd = model.adapt_legacy_state_dict(sd, pinn.state_dict())
     pinn.load_state_dict(sd, strict=False)
     pinn.eval()
@@ -79,11 +85,6 @@ def _run_two_layer_fea(e1, e2, t1, t2, ne_x, ne_y, ne_z):
 
 def _predict_pinn(pinn, device, x_flat, y_flat, z_flat, e1, e2, t1, t2):
     r_ref, mu_ref, v0_ref = _ref_params()
-    # This repo's default PINN now uses a three-layer param layout; for a two-layer
-    # comparison we embed the 2-layer case by setting (E3,t3)=(E2,0).
-    # Keeping t3=0 preserves the physical thickness t1+t2 for z_hat scaling.
-    e3 = 0.5 * (float(e1) + float(e2))
-    t3 = 0.0
     pts = np.stack(
         [
             x_flat,
@@ -93,8 +94,6 @@ def _predict_pinn(pinn, device, x_flat, y_flat, z_flat, e1, e2, t1, t2):
             np.full_like(x_flat, float(t1)),
             np.full_like(x_flat, float(e2)),
             np.full_like(x_flat, float(t2)),
-            np.full_like(x_flat, e3),
-            np.full_like(x_flat, t3),
             np.full_like(x_flat, r_ref),
             np.full_like(x_flat, mu_ref),
             np.full_like(x_flat, v0_ref),
