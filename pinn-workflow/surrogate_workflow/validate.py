@@ -1,13 +1,12 @@
 import os
 
 import matplotlib
-
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from surrogate_workflow import baseline
 from surrogate_workflow import config
+from surrogate_workflow import baseline
 from surrogate_workflow import data as data_utils
 from surrogate_workflow import surrogate
 
@@ -83,6 +82,7 @@ def plot_trend(param_name, model, dataset, device, path):
 
 def optimization_safety_check(model, dataset, device):
     ranges = config.DESIGN_RANGES
+    params = dataset["param_names"]
     candidates = data_utils.sample_designs(int(config.OPT_CANDIDATES), ranges, int(config.SEED) + 13)
     x_norm, _, _ = data_utils.normalize_inputs(candidates, ranges)
     y_norm = surrogate.predict(model, x_norm, device)
@@ -120,7 +120,7 @@ def write_summary(path, param_names, metrics, safety_check):
         f"Test MSE: {metrics['test_mse']:.6e}",
         "",
         "Optimization safety check:",
-        f"  mu*: {np.array2string(safety_check['mu_star'], precision=4)}",
+        f"  mu*: {np.array2string(safety_check['mu_star'], precision=3)}",
         f"  surrogate y(mu*): {safety_check['pred_star']:.6e}",
         f"  baseline y(mu*): {safety_check['true_star']:.6e}",
         f"  baseline y(mu_mid): {safety_check['baseline_mid']:.6e}",
@@ -128,4 +128,3 @@ def write_summary(path, param_names, metrics, safety_check):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-

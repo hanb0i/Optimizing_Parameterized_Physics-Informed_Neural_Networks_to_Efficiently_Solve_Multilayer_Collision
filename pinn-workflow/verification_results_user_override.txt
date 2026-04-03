@@ -1,0 +1,29 @@
+Model loaded from /Users/hanbosong/GitHub/Basic-PiNN-Model-For-Three-Layered-Collision/pinn-workflow/pinn_model.pth
+Initializing FEA Solver...
+Assembling...
+Solving...
+Initializing FEA Solver...
+Assembling...
+Solving...
+Initializing FEA Solver...
+Assembling...
+Solving...
+
+=== Parametric Verification ===
+
+--- Thickness t=0.05 ---
+  E=1.0: FEA peak=-18.647261, PINN peak=-6.838321, rel_err=0.633
+  E=5.0: FEA peak=-3.729452, PINN peak=-1.529093, rel_err=0.590
+  E=10.0: FEA peak=-1.864726, PINN peak=-0.862455, rel_err=0.537
+
+--- Thickness t=0.1 ---
+  E=1.0: FEA peak=-2.833739, PINN peak=-2.751781, rel_err=0.029
+  E=5.0: FEA peak=-0.566748, PINN peak=-0.640523, rel_err=0.130
+  E=10.0: FEA peak=-0.283374, PINN peak=-0.376323, rel_err=0.328
+
+--- Thickness t=0.15 ---
+  E=1.0: FEA peak=-1.025614, PINN peak=-1.431217, rel_err=0.395
+  E=5.0: FEA peak=-0.205123, PINN peak=-0.342752, rel_err=0.671
+  E=10.0: FEA peak=-0.102561, PINN peak=-0.207593, rel_err=1.024
+
+Verification Complete.

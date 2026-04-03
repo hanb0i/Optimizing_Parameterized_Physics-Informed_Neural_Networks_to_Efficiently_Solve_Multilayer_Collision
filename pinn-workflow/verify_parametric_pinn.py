@@ -1,11 +1,11 @@
-
 import os
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.interpolate import RegularGridInterpolator
+from mpl_toolkits.mplot3d import Axes3D
 import torch
 
-# Add paths
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PINN_WORKFLOW_DIR = os.path.join(REPO_ROOT, "pinn-workflow")
 FEA_SOLVER_DIR = os.path.join(REPO_ROOT, "fea-workflow", "solver")
@@ -18,746 +18,225 @@ if FEA_SOLVER_DIR not in sys.path:
 import pinn_config as config
 import model
 import fem_solver
-import data
-import physics
 
-def _load_compatible_state_dict(pinn, model_path, device):
-    sd = torch.load(model_path, map_location=device, weights_only=True)
-    target_sd = pinn.state_dict()
-    w_key = "layer.net.0.weight"
-    if w_key in sd and w_key in target_sd:
-        src_w = sd[w_key]
-        tgt_w = target_sd[w_key]
-        if src_w.shape != tgt_w.shape and src_w.shape[0] == tgt_w.shape[0]:
-            if src_w.shape[1] == 8 and tgt_w.shape[1] == 11:
-                adapted = torch.zeros_like(tgt_w)
-                adapted[:, 0:5] = src_w[:, 0:5]
-                adapted[:, 8:11] = src_w[:, 5:8]
-                sd[w_key] = adapted
-                print("Adapted checkpoint first-layer weights from 8->11 inputs.")
-            elif src_w.shape[1] == 10 and tgt_w.shape[1] == 11:
-                adapted = torch.zeros_like(tgt_w)
-                adapted[:, 0:7] = src_w[:, 0:7]
-                adapted[:, 8:11] = src_w[:, 7:10]
-                sd[w_key] = adapted
-                print("Adapted checkpoint first-layer weights from 10->11 inputs.")
-    missing, unexpected = pinn.load_state_dict(sd, strict=False)
-    if missing:
-        print(f"Missing keys while loading checkpoint: {len(missing)}")
-    if unexpected:
-        print(f"Unexpected keys while loading checkpoint: {len(unexpected)}")
 
-def _get_e_sweep_values():
-    if hasattr(config, "VERIFY_E_SWEEP_VALUES"):
-        return [float(v) for v in config.VERIFY_E_SWEEP_VALUES]
-    e_min, e_max = config.E_RANGE
-    steps = int(os.getenv("PINN_VERIFY_E_STEPS", "10"))
-    steps = max(2, steps)
-    return np.linspace(float(e_min), float(e_max), steps).tolist()
-
-def _get_restitution_sweep_values():
-    if hasattr(config, "VERIFY_RESTITUTION_SWEEP_VALUES"):
-        return [float(v) for v in config.VERIFY_RESTITUTION_SWEEP_VALUES]
-    r_min, r_max = config.RESTITUTION_RANGE
-    return np.linspace(float(r_min), float(r_max), 7).tolist()
-
-def _get_friction_sweep_values():
-    if hasattr(config, "VERIFY_FRICTION_SWEEP_VALUES"):
-        return [float(v) for v in config.VERIFY_FRICTION_SWEEP_VALUES]
-    mu_min, mu_max = config.FRICTION_RANGE
-    return np.linspace(float(mu_min), float(mu_max), 7).tolist()
-
-def _get_impact_velocity_sweep_values():
-    if hasattr(config, "VERIFY_IMPACT_VELOCITY_SWEEP_VALUES"):
-        return [float(v) for v in config.VERIFY_IMPACT_VELOCITY_SWEEP_VALUES]
-    v0_min, v0_max = config.IMPACT_VELOCITY_RANGE
-    return np.linspace(float(v0_min), float(v0_max), 7).tolist()
-
-def _u_from_v(v_pinn_flat, E_val, thickness):
-    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
-    if alpha == 0.0:
-        t_scale = 1.0
+def _load_model(model_path, device):
+    pinn = model.MultiLayerPINN().to(device)
+    if os.path.exists(model_path):
+        sd = torch.load(model_path, map_location=device, weights_only=True)
+        sd = model.adapt_legacy_state_dict(sd, pinn.state_dict())
+        pinn.load_state_dict(sd, strict=False)
+        print(f"Model loaded from {model_path}")
     else:
-        t_scale = (float(getattr(config, "H", 1.0)) / max(1e-8, float(thickness))) ** alpha
-    e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
-    return (v_pinn_flat / (float(E_val) ** e_pow)) * t_scale
+        print(f"Warning: {model_path} not found.")
+    pinn.eval()
+    return pinn
 
-def _ref_param_values():
+
+def _u_from_v(v, E1_val, E2_val, t1_val, t2_val):
+    e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
+    e_scale = 0.5 * (float(E1_val) + float(E2_val))
+    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
+    scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
+    h_ref = float(getattr(config, "H", 1.0))
+    t_total = max(float(t1_val) + float(t2_val), 1e-8)
+    return scale * v / (e_scale ** e_pow) * (h_ref / t_total) ** alpha
+
+
+def _ref_params():
     return (
         float(getattr(config, "RESTITUTION_REF", 0.5)),
         float(getattr(config, "FRICTION_REF", 0.3)),
         float(getattr(config, "IMPACT_VELOCITY_REF", 1.0)),
     )
 
-def verify_e_sweep(pinn, device, thickness_values, viz_dir, fea_refs=None):
-    """Verify E-parametrization by comparing peak top-surface u_z vs E.
 
-    For linear elasticity here, u scales approximately as 1/E. We compute one
-    FEA solution per thickness at E=1, then scale the whole field by 1/E for
-    the sweep curve.
-    """
-    e_values = _get_e_sweep_values()
-    e_ref = 1.0
-
-    print("\n=== E Sweep Verification (Peak u_z vs E) ===")
-    for thickness in thickness_values:
-        if fea_refs is not None and thickness in fea_refs:
-            x_nodes, y_nodes, z_nodes, u_fea_ref = fea_refs[thickness]
-        else:
-            x_nodes, y_nodes, z_nodes, u_fea_ref = run_fea(e_ref, thickness)
-
-        u_z_fea_top_ref = np.array(u_fea_ref, dtype=float)[:, :, -1, 2].T  # (ny, nx)
-
-        X, Y = np.meshgrid(x_nodes, y_nodes)
-        nx, ny = len(x_nodes), len(y_nodes)
-        X_flat = X.flatten()
-        Y_flat = Y.flatten()
-        Z_flat = np.ones_like(X_flat) * thickness
-        T_flat = np.ones_like(X_flat) * thickness
-        r_ref, mu_ref, v0_ref = _ref_param_values()
-
-        fea_peaks = []
-        pinn_peaks = []
-        rel_peak_errs = []
-
-        for E_val in e_values:
-            u_z_fea_top = u_z_fea_top_ref * (e_ref / float(E_val))
-            peak_fea = float(np.min(u_z_fea_top))
-
-            E_flat = np.ones_like(X_flat) * E_val
-            R_flat = np.ones_like(X_flat) * r_ref
-            MU_flat = np.ones_like(X_flat) * mu_ref
-            V0_flat = np.ones_like(X_flat) * v0_ref
-            input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat, R_flat, MU_flat, V0_flat], axis=1)
-            input_tensor = torch.tensor(input_pts, dtype=torch.float32).to(device)
-            with torch.no_grad():
-                v_pinn_flat = pinn(input_tensor).cpu().numpy()
-            u_pinn_flat = _u_from_v(v_pinn_flat, E_val, thickness)
-            u_z_pinn_top = u_pinn_flat[:, 2].reshape(ny, nx)
-            peak_pinn = float(np.min(u_z_pinn_top))
-
-            fea_peaks.append(peak_fea)
-            pinn_peaks.append(peak_pinn)
-            rel_peak_errs.append(abs((peak_pinn - peak_fea) / peak_fea) if peak_fea != 0 else np.nan)
-
-        e_arr = np.array(e_values, dtype=float)
-        fea_amp = np.clip(-np.array(fea_peaks, dtype=float), 1e-12, None)
-        pinn_amp = np.clip(-np.array(pinn_peaks, dtype=float), 1e-12, None)
-        k_fea = -np.polyfit(np.log(e_arr), np.log(fea_amp), 1)[0]
-        k_pinn = -np.polyfit(np.log(e_arr), np.log(pinn_amp), 1)[0]
-
-        print(f"\nThickness t={thickness}:")
-        print(f"  Expected scaling ~ 1/E (k≈1.0). FEA fit k={k_fea:.3f}, PINN fit k={k_pinn:.3f}")
-        print(f"  Peak rel error: mean={float(np.nanmean(rel_peak_errs)):.3f}, max={float(np.nanmax(rel_peak_errs)):.3f}")
-
-        fig, ax = plt.subplots(1, 1, figsize=(8, 5))
-        ax.plot(e_values, fea_peaks, "o-", label="FEA peak u_z (scaled)", linewidth=1.5)
-        ax.plot(e_values, pinn_peaks, "s-", label="PINN peak u_z", linewidth=1.5)
-        ax.set_xlabel("E")
-        ax.set_ylabel("Peak u_z (top surface)")
-        ax.set_title(f"E Sweep | t={thickness} | FEA k={k_fea:.2f}, PINN k={k_pinn:.2f}")
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-        plt.tight_layout()
-        out_path = os.path.join(viz_dir, f"e_sweep_peaks_t{thickness:.3f}.png")
-        plt.savefig(out_path)
-        print(f"  Saved {out_path}")
-        plt.close()
-
-def verify_impact_param_sweeps(pinn, device, thickness_values, viz_dir, e_values=(1.0, 5.0, 10.0), fea_refs=None):
-    """Verify restitution/friction parametrization against FEA baseline.
-
-    If explicit impact physics is disabled, expected behavior is near-invariance
-    w.r.t restitution/friction. If enabled, sweeps quantify the induced response.
-    """
-    r_values = _get_restitution_sweep_values()
-    mu_values = _get_friction_sweep_values()
-    v0_values = _get_impact_velocity_sweep_values()
-    r_ref, mu_ref, v0_ref = _ref_param_values()
-
-    if getattr(config, "USE_EXPLICIT_IMPACT_PHYSICS", False):
-        print("\n=== Restitution/Friction Sweep Verification (Explicit-impact mode) ===")
-    else:
-        print("\n=== Restitution/Friction Sweep Verification (Invariant-to-FEA Check) ===")
-    summary = []
-    for thickness in thickness_values:
-        if fea_refs is not None and thickness in fea_refs:
-            x_nodes, y_nodes, z_nodes, u_fea_ref = fea_refs[thickness]
-        else:
-            x_nodes, y_nodes, z_nodes, u_fea_ref = run_fea(1.0, thickness)
-        u_fea_ref = np.array(u_fea_ref, dtype=float)
-
-        X, Y = np.meshgrid(x_nodes, y_nodes)
-        nx, ny = len(x_nodes), len(y_nodes)
-        X_flat = X.flatten()
-        Y_flat = Y.flatten()
-        Z_flat = np.ones_like(X_flat) * thickness
-        T_flat = np.ones_like(X_flat) * thickness
-
-        for E_val in e_values:
-            u_z_fea_top = (u_fea_ref * (1.0 / float(E_val)))[:, :, -1, 2].T
-            peak_fea = float(np.min(u_z_fea_top))
-            E_flat_ref = np.ones_like(X_flat) * E_val
-            R_flat_ref = np.ones_like(X_flat) * r_ref
-            MU_flat_ref = np.ones_like(X_flat) * mu_ref
-            V0_flat_ref = np.ones_like(X_flat) * v0_ref
-            input_ref = np.stack([X_flat, Y_flat, Z_flat, E_flat_ref, T_flat, R_flat_ref, MU_flat_ref, V0_flat_ref], axis=1)
-            with torch.no_grad():
-                v_ref_flat = pinn(torch.tensor(input_ref, dtype=torch.float32).to(device)).cpu().numpy()
-            peak_ref = float(np.min(_u_from_v(v_ref_flat, E_val, thickness)[:, 2].reshape(ny, nx)))
-
-            # Restitution sweep (mu fixed)
-            r_peaks = []
-            r_rel_errs = []
-            r_param_drifts = []
-            for r_val in r_values:
-                E_flat = np.ones_like(X_flat) * E_val
-                R_flat = np.ones_like(X_flat) * r_val
-                MU_flat = np.ones_like(X_flat) * mu_ref
-                V0_flat = np.ones_like(X_flat) * v0_ref
-                input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat, R_flat, MU_flat, V0_flat], axis=1)
-                input_tensor = torch.tensor(input_pts, dtype=torch.float32).to(device)
-                with torch.no_grad():
-                    v_pinn_flat = pinn(input_tensor).cpu().numpy()
-                u_pinn_flat = _u_from_v(v_pinn_flat, E_val, thickness)
-                peak_pinn = float(np.min(u_pinn_flat[:, 2].reshape(ny, nx)))
-                r_peaks.append(peak_pinn)
-                r_rel_errs.append(abs((peak_pinn - peak_fea) / peak_fea) if peak_fea != 0 else np.nan)
-                r_param_drifts.append(abs((peak_pinn - peak_ref) / peak_ref) if peak_ref != 0 else np.nan)
-
-            # Friction sweep (r fixed)
-            mu_peaks = []
-            mu_rel_errs = []
-            mu_param_drifts = []
-            for mu_val in mu_values:
-                E_flat = np.ones_like(X_flat) * E_val
-                R_flat = np.ones_like(X_flat) * r_ref
-                MU_flat = np.ones_like(X_flat) * mu_val
-                V0_flat = np.ones_like(X_flat) * v0_ref
-                input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat, R_flat, MU_flat, V0_flat], axis=1)
-                input_tensor = torch.tensor(input_pts, dtype=torch.float32).to(device)
-                with torch.no_grad():
-                    v_pinn_flat = pinn(input_tensor).cpu().numpy()
-                u_pinn_flat = _u_from_v(v_pinn_flat, E_val, thickness)
-                peak_pinn = float(np.min(u_pinn_flat[:, 2].reshape(ny, nx)))
-                mu_peaks.append(peak_pinn)
-                mu_rel_errs.append(abs((peak_pinn - peak_fea) / peak_fea) if peak_fea != 0 else np.nan)
-                mu_param_drifts.append(abs((peak_pinn - peak_ref) / peak_ref) if peak_ref != 0 else np.nan)
-
-            print(f"\nThickness t={thickness}, E={E_val}:")
-            print(f"  Restitution sweep peak rel error: mean={float(np.nanmean(r_rel_errs)):.3f}, max={float(np.nanmax(r_rel_errs)):.3f}")
-            print(f"  Friction sweep peak rel error: mean={float(np.nanmean(mu_rel_errs)):.3f}, max={float(np.nanmax(mu_rel_errs)):.3f}")
-            print(f"  Restitution parametrization drift vs ref: mean={float(np.nanmean(r_param_drifts)):.3f}, max={float(np.nanmax(r_param_drifts)):.3f}")
-            print(f"  Friction parametrization drift vs ref: mean={float(np.nanmean(mu_param_drifts)):.3f}, max={float(np.nanmax(mu_param_drifts)):.3f}")
-
-            # Impact-velocity sweep (r and mu fixed to refs)
-            v0_peaks = []
-            v0_rel_errs = []
-            v0_param_drifts = []
-            for v0_val in v0_values:
-                E_flat = np.ones_like(X_flat) * E_val
-                R_flat = np.ones_like(X_flat) * r_ref
-                MU_flat = np.ones_like(X_flat) * mu_ref
-                V0_flat = np.ones_like(X_flat) * v0_val
-                input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat, R_flat, MU_flat, V0_flat], axis=1)
-                input_tensor = torch.tensor(input_pts, dtype=torch.float32).to(device)
-                with torch.no_grad():
-                    v_pinn_flat = pinn(input_tensor).cpu().numpy()
-                u_pinn_flat = _u_from_v(v_pinn_flat, E_val, thickness)
-                peak_pinn = float(np.min(u_pinn_flat[:, 2].reshape(ny, nx)))
-                v0_peaks.append(peak_pinn)
-                v0_rel_errs.append(abs((peak_pinn - peak_fea) / peak_fea) if peak_fea != 0 else np.nan)
-                v0_param_drifts.append(abs((peak_pinn - peak_ref) / peak_ref) if peak_ref != 0 else np.nan)
-            print(f"  Impact-velocity sweep peak rel error: mean={float(np.nanmean(v0_rel_errs)):.3f}, max={float(np.nanmax(v0_rel_errs)):.3f}")
-            print(f"  Impact-velocity param drift vs ref: mean={float(np.nanmean(v0_param_drifts)):.3f}, max={float(np.nanmax(v0_param_drifts)):.3f}")
-            summary.append({
-                "t": float(thickness),
-                "E": float(E_val),
-                "r_mean": float(np.nanmean(r_rel_errs)),
-                "r_max": float(np.nanmax(r_rel_errs)),
-                "mu_mean": float(np.nanmean(mu_rel_errs)),
-                "mu_max": float(np.nanmax(mu_rel_errs)),
-                "r_param_mean": float(np.nanmean(r_param_drifts)),
-                "r_param_max": float(np.nanmax(r_param_drifts)),
-                "mu_param_mean": float(np.nanmean(mu_param_drifts)),
-                "mu_param_max": float(np.nanmax(mu_param_drifts)),
-                "v0_mean": float(np.nanmean(v0_rel_errs)),
-                "v0_max": float(np.nanmax(v0_rel_errs)),
-                "v0_param_mean": float(np.nanmean(v0_param_drifts)),
-                "v0_param_max": float(np.nanmax(v0_param_drifts)),
-            })
-
-            fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
-            axes[0].plot(r_values, r_peaks, "o-", label="PINN peak u_z")
-            axes[0].axhline(peak_fea, color="black", linestyle="--", label="FEA peak u_z")
-            axes[0].set_title(f"Restitution sweep | t={thickness}, E={E_val}")
-            axes[0].set_xlabel("restitution")
-            axes[0].set_ylabel("Peak u_z")
-            axes[0].grid(True, alpha=0.3)
-            axes[0].legend()
-
-            axes[1].plot(mu_values, mu_peaks, "o-", label="PINN peak u_z")
-            axes[1].axhline(peak_fea, color="black", linestyle="--", label="FEA peak u_z")
-            axes[1].set_title(f"Friction sweep | t={thickness}, E={E_val}")
-            axes[1].set_xlabel("friction")
-            axes[1].set_ylabel("Peak u_z")
-            axes[1].grid(True, alpha=0.3)
-            axes[1].legend()
-
-            axes[2].plot(v0_values, v0_peaks, "o-", label="PINN peak u_z")
-            axes[2].axhline(peak_fea, color="black", linestyle="--", label="FEA peak u_z")
-            axes[2].set_title(f"Impact-velocity sweep | t={thickness}, E={E_val}")
-            axes[2].set_xlabel("impact velocity v0")
-            axes[2].set_ylabel("Peak u_z")
-            axes[2].grid(True, alpha=0.3)
-            axes[2].legend()
-
-            plt.tight_layout()
-            out_path = os.path.join(viz_dir, f"impact_param_sweeps_t{thickness:.3f}_E{float(E_val):.1f}.png")
-            plt.savefig(out_path)
-            print(f"  Saved {out_path}")
-            plt.close()
-
-    if summary:
-        all_means = np.array([(row["r_mean"] + row["mu_mean"] + row["v0_mean"]) / 3.0 for row in summary], dtype=float)
-        all_max = np.array([max(row["r_max"], row["mu_max"], row["v0_max"]) for row in summary], dtype=float)
-        all_param_means = np.array([(row["r_param_mean"] + row["mu_param_mean"] + row["v0_param_mean"]) / 3.0 for row in summary], dtype=float)
-        all_param_max = np.array([max(row["r_param_max"], row["mu_param_max"], row["v0_param_max"]) for row in summary], dtype=float)
-        print("\nImpact-param sweep summary:")
-        print(f"  Combined mean peak rel error: {float(np.mean(all_means)):.3f}")
-        print(f"  Worst-case peak rel error: {float(np.max(all_max)):.3f}")
-        print(f"  Combined mean param-drift (vs PINN ref): {float(np.mean(all_param_means)):.3f}")
-        print(f"  Worst-case param-drift (vs PINN ref): {float(np.max(all_param_max)):.3f}")
-    return summary
-
-def plot_training_data_distribution():
-    print("Generating Training Data Distribution Plot...")
-    
-    # Generate a sample batch of data
-    # Note: This is a fresh sample based on the distribution logic, not the exact points from training history.
-    sample_data = data.get_data()
-    
-    fig = plt.figure(figsize=(15, 10))
-    
-    # 1. Interior Points (3D Scatter)
-    ax1 = fig.add_subplot(231, projection='3d')
-    pts = sample_data['interior'][0].numpy()
-    # decimate for speed/clarity
-    if len(pts) > 1000:
-        indices = np.random.choice(len(pts), 1000, replace=False)
-        pts = pts[indices]
-    
-    sc1 = ax1.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c=pts[:, 3], cmap='viridis', s=2)
-    ax1.set_title(f"Interior (Sample N={len(pts)})")
-    ax1.set_xlabel('x')
-    ax1.set_ylabel('y')
-    ax1.set_zlabel('z')
-    plt.colorbar(sc1, ax=ax1, label='E')
-
-    # 2. BC Sides (3D Scatter)
-    ax2 = fig.add_subplot(232, projection='3d')
-    pts = sample_data['sides'][0].numpy()
-    if len(pts) > 1000:
-        indices = np.random.choice(len(pts), 1000, replace=False)
-        pts = pts[indices]
-    
-    sc2 = ax2.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c=pts[:, 3], cmap='coolwarm', s=2)
-    ax2.set_title(f"BC Sides (Sample N={len(pts)})")
-    ax2.set_xlabel('x')
-    ax2.set_ylabel('y')
-    ax2.set_zlabel('z')
-    plt.colorbar(sc2, ax=ax2, label='E')
-
-    # 3. Top Load (2D Projection x-y)
-    ax3 = fig.add_subplot(233)
-    pts = sample_data['top_load'].numpy()
-    sc3 = ax3.scatter(pts[:, 0], pts[:, 1], c=pts[:, 3], cmap='plasma', s=5)
-    ax3.set_title(f"Top Load (z=H) (N={len(pts)})")
-    ax3.set_xlabel('x')
-    ax3.set_ylabel('y')
-    ax3.set_xlim(0, config.Lx)
-    ax3.set_ylim(0, config.Ly)
-    # Draw load patch box
-    rect = plt.Rectangle((config.LOAD_PATCH_X[0], config.LOAD_PATCH_Y[0]), 
-                         config.LOAD_PATCH_X[1]-config.LOAD_PATCH_X[0], 
-                         config.LOAD_PATCH_Y[1]-config.LOAD_PATCH_Y[0], 
-                         linewidth=1, edgecolor='r', facecolor='none')
-    ax3.add_patch(rect)
-    plt.colorbar(sc3, ax=ax3, label='E')
-
-    # 4. Top Free (2D Projection x-y)
-    ax4 = fig.add_subplot(234)
-    pts = sample_data['top_free'].numpy()
-    if len(pts) > 1000:
-        indices = np.random.choice(len(pts), 1000, replace=False)
-        pts = pts[indices]
-    sc4 = ax4.scatter(pts[:, 0], pts[:, 1], c=pts[:, 3], cmap='plasma', s=5)
-    ax4.set_title(f"Top Free (z=H) (Sample N={len(pts)})")
-    ax4.set_xlabel('x')
-    ax4.set_ylabel('y')
-    ax4.set_xlim(0, config.Lx)
-    ax4.set_ylim(0, config.Ly)
-    plt.colorbar(sc4, ax=ax4, label='E')
-
-    # 5. Bottom (2D Projection x-y)
-    ax5 = fig.add_subplot(235)
-    pts = sample_data['bottom'].numpy()
-    if len(pts) > 1000:
-        indices = np.random.choice(len(pts), 1000, replace=False)
-        pts = pts[indices]
-    sc5 = ax5.scatter(pts[:, 0], pts[:, 1], c=pts[:, 3], cmap='plasma', s=5)
-    ax5.set_title(f"Bottom (z=0) (Sample N={len(pts)})")
-    ax5.set_xlabel('x')
-    ax5.set_ylabel('y')
-    ax5.set_xlim(0, config.Lx)
-    ax5.set_ylim(0, config.Ly)
-    plt.colorbar(sc5, ax=ax5, label='E')
-
-    plt.tight_layout()
-    save_path = os.path.join(REPO_ROOT, "pinn-workflow", "visualization", "training_data_distribution.png")
-    plt.savefig(save_path)
-    print(f"Saved {save_path}")
-    plt.close()
-
-def plot_training_history():
-    print("Generating Training History Plot...")
-    history_path = os.path.join(PINN_WORKFLOW_DIR, "loss_history.npy")
-    if not os.path.exists(history_path):
-        history_path = os.path.join(REPO_ROOT, "loss_history.npy")
-        
-    if not os.path.exists(history_path):
-        print(f"Error: Could not find loss_history.npy at {history_path}")
-        return
-
-    hist = np.load(history_path, allow_pickle=True).item()
-    adam = hist.get('adam', {})
-    lbfgs = hist.get('lbfgs', {})
-    
-    total_loss = adam.get('total', []) + lbfgs.get('total', [])
-    n_adam = len(adam.get('total', []))
-    
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-    axes = axes.flatten()
-
-    def concat_losses(key):
-        return adam.get(key, []) + lbfgs.get(key, [])
-
-    # Plot total loss
-    axes[0].plot(total_loss, linewidth=1.5, color='black')
-    axes[0].axvline(x=n_adam, color='r', linestyle='--', label='Switch to L-BFGS')
-    axes[0].set_xlabel("Training Step", fontsize=12)
-    axes[0].set_ylabel("Total Loss", fontsize=12)
-    axes[0].set_title("Total Loss", fontsize=14)
-    axes[0].set_yscale('log')
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
-
-    # PDE loss
-    pde_loss = concat_losses('pde')
-    axes[1].plot(pde_loss, linewidth=1.5, color='green')
-    axes[1].axvline(x=n_adam, color='r', linestyle='--', alpha=0.5)
-    axes[1].set_xlabel("Training Step", fontsize=12)
-    axes[1].set_ylabel("PDE Loss", fontsize=12)
-    axes[1].set_title("PDE Loss", fontsize=14)
-    axes[1].set_yscale('log')
-    axes[1].grid(True, alpha=0.3)
-
-    # Boundary condition losses
-    bc_sides_loss = concat_losses('bc_sides')
-    free_top_loss = concat_losses('free_top')
-    free_bot_loss = concat_losses('free_bot')
-    axes[2].plot(bc_sides_loss, linewidth=1.5, label='BC Sides', color='blue')
-    axes[2].plot(free_top_loss, linewidth=1.5, label='Free Top', color='cyan')
-    axes[2].plot(free_bot_loss, linewidth=1.5, label='Free Bot', color='purple')
-    axes[2].axvline(x=n_adam, color='r', linestyle='--', alpha=0.5)
-    axes[2].set_xlabel("Training Step", fontsize=12)
-    axes[2].set_ylabel("BC Loss", fontsize=12)
-    axes[2].set_title("Boundary Condition Losses", fontsize=14)
-    axes[2].set_yscale('log')
-    axes[2].legend()
-    axes[2].grid(True, alpha=0.3)
-
-    # Load loss
-    load_loss = concat_losses('load')
-    axes[3].plot(load_loss, linewidth=1.5, color='red')
-    axes[3].axvline(x=n_adam, color='r', linestyle='--', alpha=0.5)
-    axes[3].set_xlabel("Training Step", fontsize=12)
-    axes[3].set_ylabel("Load Loss", fontsize=12)
-    axes[3].set_title("Load BC Loss", fontsize=14)
-    axes[3].set_yscale('log')
-    axes[3].grid(True, alpha=0.3)
-
-    # FEM error plots (if available)
-    has_fem = len(adam.get('fem_mae', [])) > 0
-    if has_fem:
-        # FEM MAE
-        adam_fem_epochs = adam['epochs']
-        adam_fem_mae = adam['fem_mae']
-        lbfgs_fem_steps = [n_adam + s for s in lbfgs.get('steps', [])]
-        lbfgs_fem_mae = lbfgs.get('fem_mae', [])
-        
-        axes[4].plot(adam_fem_epochs, adam_fem_mae, 'o-', linewidth=1.5, label='Adam', color='blue')
-        if len(lbfgs_fem_mae) > 0:
-            axes[4].plot(lbfgs_fem_steps, lbfgs_fem_mae, 's-', linewidth=1.5, label='L-BFGS', color='orange')
-        axes[4].axvline(x=n_adam, color='r', linestyle='--', alpha=0.5)
-        axes[4].set_xlabel("Training Step", fontsize=12)
-        axes[4].set_ylabel("FEM MAE", fontsize=12)
-        axes[4].set_title("FEM Mean Absolute Error", fontsize=14)
-        axes[4].set_yscale('log')
-        axes[4].legend()
-        axes[4].grid(True, alpha=0.3)
-        
-        # FEM Max Error
-        adam_fem_max = adam['fem_max_err']
-        lbfgs_fem_max = lbfgs.get('fem_max_err', [])
-        
-        axes[5].plot(adam_fem_epochs, adam_fem_max, 'o-', linewidth=1.5, label='Adam', color='blue')
-        if len(lbfgs_fem_max) > 0:
-            axes[5].plot(lbfgs_fem_steps, lbfgs_fem_max, 's-', linewidth=1.5, label='L-BFGS', color='orange')
-        axes[5].axvline(x=n_adam, color='r', linestyle='--', alpha=0.5)
-        axes[5].set_xlabel("Training Step", fontsize=12)
-        axes[5].set_ylabel("FEM Max Error", fontsize=12)
-        axes[5].set_title("FEM Maximum Error", fontsize=14)
-        axes[5].set_yscale('log')
-        axes[5].legend()
-        axes[5].grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    save_path = os.path.join(REPO_ROOT, "pinn-workflow", "visualization", "training_history.png")
-    plt.savefig(save_path)
-    print(f"Saved {save_path}")
-    plt.close()
-
-def plot_pde_residual_xz(pinn, device):
-    print("Generating PDE Residual X-Z Plot...")
-    
-    # Define grid in x-z plane at y = 0.5 * Ly
-    nx, nz = 100, 100
-    x = np.linspace(0, config.Lx, nx)
-    t_min, t_max = config.THICKNESS_RANGE
-    t_mean = 0.5 * (t_min + t_max)
-    z = np.linspace(0, t_mean, nz)
-    X_res, Z_res = np.meshgrid(x, z)
-    Y_res = np.ones_like(X_res) * (config.Ly * 0.5)
-    
-    # E and thickness values? Use mean values for this diagnostic
-    E_mean = np.mean(config.E_vals)
-    E_grid = np.ones_like(X_res) * E_mean
-    T_grid = np.ones_like(X_res) * t_mean
-    
-    # Prepare input
-    # Need to flatten
-    r_ref, mu_ref, v0_ref = _ref_param_values()
-    R_grid = np.ones_like(X_res) * r_ref
-    MU_grid = np.ones_like(X_res) * mu_ref
-    V0_grid = np.ones_like(X_res) * v0_ref
-    pts = np.stack(
-        [
-            X_res.flatten(),
-            Y_res.flatten(),
-            Z_res.flatten(),
-            E_grid.flatten(),
-            T_grid.flatten(),
-            R_grid.flatten(),
-            MU_grid.flatten(),
-            V0_grid.flatten(),
-        ],
-        axis=1,
-    )
-    pts_tensor = torch.tensor(pts, dtype=torch.float32).to(device)
-    
-    # Reuse compute_residuals logic but just for this grid
-    # We need a data dict structure for physics.compute_residuals OR just reimplement the check here.
-    # Reimplementing simplified version to get spatial field:
-    
-    pts_tensor.requires_grad = True
-    
-    # Forward pass
-    v_pred = pinn(pts_tensor, 0) # Layer index 0 (doesn't usually matter for single-net if monolithic, but model expects something)
-    
-    # Material properties
-    E_local = pts_tensor[:, 3:4]
-    nu = config.nu_vals[0]
-    lm = (E_local * nu) / ((1 + nu) * (1 - 2 * nu))
-    mu = E_local / (2 * (1 + nu))
-    lm = lm.unsqueeze(2)
-    mu = mu.unsqueeze(2)
-    
-    # u = v / E (PDE/traction definition used in training)
-    u = v_pred / E_local
-    
-    # Gradients
-    grad_u = physics.gradient(u, pts_tensor)
-    eps = physics.strain(grad_u)
-    sig = physics.stress(eps, lm, mu)
-    div_sigma = physics.divergence(sig, pts_tensor)
-    
-    # Residual: -div(sigma) -- should be 0
-    residual = -div_sigma * getattr(config, "PDE_LENGTH_SCALE", 1.0)
-    residual_mag = torch.sqrt(torch.sum(residual**2, dim=1)).detach().cpu().numpy()
-    
-    residual_mag_grid = residual_mag.reshape(nz, nx)
-    
-    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-    c = ax.contourf(X_res, Z_res, residual_mag_grid, levels=50, cmap='viridis')
-    ax.set_title(f"PDE Residual Magnitude |−∇·σ| (x-z plane at y={config.Ly*0.5:.2f}, E={E_mean}, t={t_mean})", fontsize=14)
-    ax.set_xlabel("x")
-    ax.set_ylabel("z")
-    cbar = plt.colorbar(c, ax=ax)
-    cbar.set_label("Residual Magnitude")
-    
-    plt.tight_layout()
-    save_path = os.path.join(REPO_ROOT, "pinn-workflow", "visualization", "pde_residual_xz.png")
-    plt.savefig(save_path)
-    print(f"Saved {save_path}")
-    plt.close()
-
-
-def run_fea(E_val, thickness):
-    print(f"Running FEA for E={E_val}, thickness={thickness}...")
-    # Mock config for FEA solver
+def run_fea(E1_val, E2_val, t1_val, t2_val):
+    thickness = float(t1_val) + float(t2_val)
     cfg = {
         'geometry': {'Lx': config.Lx, 'Ly': config.Ly, 'H': thickness},
-        'material': {'E': E_val, 'nu': config.nu_vals[0]},
+        'material': {
+            'E_layers': [float(E1_val), float(E2_val)],
+            't_layers': [float(t1_val), float(t2_val)],
+            'nu': config.nu_vals[0],
+        },
         'load_patch': {
             'pressure': config.p0,
-            'x_start': config.LOAD_PATCH_X[0]/config.Lx,
-            'x_end': config.LOAD_PATCH_X[1]/config.Lx,
-            'y_start': config.LOAD_PATCH_Y[0]/config.Ly,
-            'y_end': config.LOAD_PATCH_Y[1]/config.Ly
+            'x_start': config.LOAD_PATCH_X[0] / config.Lx,
+            'x_end': config.LOAD_PATCH_X[1] / config.Lx,
+            'y_start': config.LOAD_PATCH_Y[0] / config.Ly,
+            'y_end': config.LOAD_PATCH_Y[1] / config.Ly,
         }
     }
-    x, y, z, u = fem_solver.solve_fem(cfg)
-    return x, y, z, u
+    return fem_solver.solve_two_layer_fem(cfg)
 
-def main():
-    E_test_values = [1.0, 5.0, 10.0]
-    t_min, t_max = config.THICKNESS_RANGE
-    thickness_values = [t_min, config.H, t_max]
-    results = {}
 
-    # Load PINN
-    requested_device = os.getenv("PINN_DEVICE")
-    if requested_device:
-        device = torch.device(requested_device)
-    elif torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
+def _pinn_predict_top(pinn, device, X_flat, Y_flat, t1_val, t2_val, E1_val, E2_val):
+    r_ref, mu_ref, v0_ref = _ref_params()
+    thickness = float(t1_val) + float(t2_val)
+    Z_flat = np.ones_like(X_flat) * thickness
+    E1_flat = np.ones_like(X_flat) * E1_val
+    E2_flat = np.ones_like(X_flat) * E2_val
+    R_flat = np.ones_like(X_flat) * r_ref
+    MU_flat = np.ones_like(X_flat) * mu_ref
+    V0_flat = np.ones_like(X_flat) * v0_ref
+    T1_flat = np.ones_like(X_flat) * t1_val
+    T2_flat = np.ones_like(X_flat) * t2_val
+    pts = np.stack([X_flat, Y_flat, Z_flat, E1_flat, T1_flat, E2_flat, T2_flat, R_flat, MU_flat, V0_flat], axis=1)
+    with torch.no_grad():
+        v = pinn(torch.tensor(pts, dtype=torch.float32).to(device)).cpu().numpy()
+    return _u_from_v(v, E1_val, E2_val, t1_val, t2_val)
 
-    pinn = model.MultiLayerPINN().to(device)
-    model_path = os.path.join(REPO_ROOT, "pinn-workflow", "pinn_model.pth")
-    if not os.path.exists(model_path):
-        model_path = os.path.join(REPO_ROOT, "pinn_model.pth")
-        
-    print(f"Loading model from: {model_path}")
-    _load_compatible_state_dict(pinn, model_path, device)
-    pinn.eval()
 
-    # Create visualization dir if not exists
-    viz_dir = os.path.join(REPO_ROOT, "pinn-workflow", "visualization")
+def verify_parametric(pinn, device, viz_dir):
     os.makedirs(viz_dir, exist_ok=True)
 
-    # --- 1. Diagnostic Plots ---
-    if os.getenv("PINN_VERIFY_SKIP_DIAGNOSTICS", "0") != "1":
-        plot_training_data_distribution()
-        plot_training_history()
-        plot_pde_residual_xz(pinn, device)
+    t1_targets = [float(val) for val in getattr(config, "DATA_T1_VALUES", [float(config.H) * 0.5])]
+    t2_targets = [float(val) for val in getattr(config, "DATA_T2_VALUES", [float(config.H) * 0.5])]
+    E_targets = [1.0, 5.0, 10.0]
 
-    # --- 2. Parametric Verification Plot ---
-    # Create one figure per thickness to preserve FEA/PINN/Error rows
-    print("\nGenerating Parametric Comparison Plots...")
-    fea_refs = {}
-    for thickness in thickness_values:
-        # Linear elastic response: compute FEA once at E=1 and scale by 1/E.
-        x_nodes_ref, y_nodes_ref, z_nodes_ref, u_fea_ref = run_fea(1.0, thickness)
-        u_fea_ref = np.array(u_fea_ref, dtype=float)
-        fea_refs[thickness] = (x_nodes_ref, y_nodes_ref, z_nodes_ref, u_fea_ref)
+    nx, ny = 101, 101
+    x_range = np.linspace(0, config.Lx, nx)
+    y_range = np.linspace(0, config.Ly, ny)
+    X, Y = np.meshgrid(x_range, y_range)
+    X_flat = X.flatten()
+    Y_flat = Y.flatten()
 
-        fig, axes = plt.subplots(3, 3, figsize=(18, 15))
-        # Row 0: FEA, Row 1: PINN, Row 2: Error
-        # Cols: E=1, E=5, E=10
+    fea_cache = {}  # {(t1, t2): (x_n, y_n, z_n, u_arr)}
+    for t1_val in t1_targets:
+        for t2_val in t2_targets:
+            x_n, y_n, z_n, u_fea = run_fea(1.0, 1.0, t1_val, t2_val)
+            fea_cache[(t1_val, t2_val)] = (np.array(x_n), np.array(y_n), np.array(z_n), np.array(u_fea, dtype=float))
 
-        for idx, E_val in enumerate(E_test_values):
-            # 1. FEA via scaling from E=1 reference
-            x_nodes, y_nodes, z_nodes = x_nodes_ref, y_nodes_ref, z_nodes_ref
-            u_fea_grid = u_fea_ref * (1.0 / float(E_val))
-            
-            # Extract Top Surface for Visualization
-            # u_fea_grid shape: (nx, ny, nz, 3)
-            u_z_fea_top = u_fea_grid[:, :, -1, 2].T # Transpose for pcolormesh (y, x)
-            
-            # Meshgrid for plotting
-            X, Y = np.meshgrid(x_nodes, y_nodes)
-            
-            # 2. Run PINN
-            # Create grid points matching FEA nodes
-            nx, ny = len(x_nodes), len(y_nodes)
-            X_flat = X.flatten()
-            Y_flat = Y.flatten()
-            Z_flat = np.ones_like(X_flat) * thickness
-            E_flat = np.ones_like(X_flat) * E_val
-            T_flat = np.ones_like(X_flat) * thickness
-            r_ref, mu_ref, v0_ref = _ref_param_values()
-            R_flat = np.ones_like(X_flat) * r_ref
-            MU_flat = np.ones_like(X_flat) * mu_ref
-            V0_flat = np.ones_like(X_flat) * v0_ref
-            
-            # Prepare input (N, 8)
-            input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat, R_flat, MU_flat, V0_flat], axis=1)
-            input_tensor = torch.tensor(input_pts, dtype=torch.float32).to(device)
-            
-            with torch.no_grad():
-                v_pinn_flat = pinn(input_tensor).cpu().numpy()
-                
-            u_pinn_flat = _u_from_v(v_pinn_flat, E_val, thickness)
-                
-            u_z_pinn_top = u_pinn_flat[:, 2].reshape(ny, nx)
-            
-            # 3. Compute Error
-            abs_diff = np.abs(u_z_fea_top - u_z_pinn_top)
-            mae = np.mean(abs_diff)
-            max_err = np.max(abs_diff)
-            peak_fea = np.min(u_z_fea_top)
-            peak_pinn = np.min(u_z_pinn_top)
-            
-            print(f"\n--- Results for E={E_val}, thickness={thickness} ---")
-            print(f"Peak Deflection FEA: {peak_fea:.6f}")
-            print(f"Peak Deflection PINN: {peak_pinn:.6f}")
-            print(f"MAE: {mae:.6f}")
-            print(f"Max Error: {max_err:.6f}")
-            
-            # 4. Plot
-            # Row 0: FEA
-            ax_fea = axes[0, idx]
-            c1 = ax_fea.contourf(X, Y, u_z_fea_top, levels=50, cmap="jet")
-            ax_fea.set_title(f"FEA (E={E_val}, t={thickness})\nPeak: {peak_fea:.5f}")
-            plt.colorbar(c1, ax=ax_fea)
-            
-            # Row 1: PINN
-            ax_pinn = axes[1, idx]
-            c2 = ax_pinn.contourf(X, Y, u_z_pinn_top, levels=50, cmap="jet")
-            ax_pinn.set_title(f"PINN (E={E_val}, t={thickness})\nPeak: {peak_pinn:.5f}")
-            plt.colorbar(c2, ax=ax_pinn)
-            
-            # Row 2: Error
-            ax_err = axes[2, idx]
-            c3 = ax_err.contourf(X, Y, abs_diff, levels=50, cmap="magma")
-            ax_err.set_title(f"Error (MAE: {mae:.5f})")
-            plt.colorbar(c3, ax=ax_err)
+    print("\n=== Parametric Verification ===")
 
-        plt.tight_layout()
-        result_path = os.path.join(viz_dir, f"parametric_verification_t{thickness:.3f}.png")
-        plt.savefig(result_path)
-        print(f"\nVerification plot saved to: {result_path}")
-    # plt.show()
+    for t1_val in t1_targets:
+        for t2_val in t2_targets:
+            x_n, y_n, z_n, u_fea_ref = fea_cache[(t1_val, t2_val)]
+            print(f"\n--- Thickness t1={t1_val}, t2={t2_val} ---")
 
-    # --- 3. E Sweep Verification ---
-    verify_e_sweep(pinn, device, thickness_values, viz_dir, fea_refs=fea_refs)
-    # --- 4. Restitution/Friction Sweeps ---
-    verify_impact_param_sweeps(pinn, device, thickness_values, viz_dir, fea_refs=fea_refs)
+            fig_grid, axes_grid = plt.subplots(3, 3, figsize=(18, 15))
+
+            for e_idx, E_val in enumerate(E_targets):
+                scale = 1.0 / float(E_val)
+                u_z_fea_top = (u_fea_ref * scale)[:, :, -1, 2].T
+
+                u_pinn = _pinn_predict_top(pinn, device, X_flat, Y_flat, t1_val, t2_val, E_val, E_val)
+                UZ_pinn = u_pinn[:, 2].reshape(ny, nx)
+
+                peak_fea = float(np.min(u_z_fea_top))
+                peak_pinn = float(np.min(UZ_pinn))
+                rel_err = abs((peak_pinn - peak_fea) / peak_fea) if peak_fea != 0 else float('nan')
+                print(f"  E={E_val}: FEA peak={peak_fea:.6f}, PINN peak={peak_pinn:.6f}, rel_err={rel_err:.3f}")
+
+                u_fea_top_2d = (u_fea_ref * scale)[:, :, -1, 2]
+                interp = RegularGridInterpolator((x_n, y_n), u_fea_top_2d, method='linear', bounds_error=False, fill_value=None)
+                UZ_fea_interp = interp(np.stack([X_flat, Y_flat], axis=1)).reshape(ny, nx)
+
+                vmin = min(float(np.nanmin(UZ_fea_interp)), float(np.min(UZ_pinn)))
+                vmax = max(float(np.nanmax(UZ_fea_interp)), float(np.max(UZ_pinn)))
+
+                im0 = axes_grid[0, e_idx].contourf(X, Y, UZ_fea_interp, 50, cmap='jet', vmin=vmin, vmax=vmax)
+                plt.colorbar(im0, ax=axes_grid[0, e_idx])
+                axes_grid[0, e_idx].set_title(f"FEA (E={E_val})\nPeak: {peak_fea:.4f}")
+
+                im1 = axes_grid[1, e_idx].contourf(X, Y, UZ_pinn, 50, cmap='jet', vmin=vmin, vmax=vmax)
+                plt.colorbar(im1, ax=axes_grid[1, e_idx])
+                axes_grid[1, e_idx].set_title(f"PINN (E={E_val})\nPeak: {peak_pinn:.4f}")
+
+                error = np.abs(UZ_pinn - UZ_fea_interp)
+                im2 = axes_grid[2, e_idx].contourf(X, Y, error, 50, cmap='magma')
+                plt.colorbar(im2, ax=axes_grid[2, e_idx])
+                axes_grid[2, e_idx].set_title(f"Abs Error\nMAE: {np.nanmean(error):.5f}")
+
+                fig_3d = plt.figure(figsize=(16, 8))
+                ax1 = fig_3d.add_subplot(121, projection='3d')
+                ax2 = fig_3d.add_subplot(122, projection='3d')
+                v_min_3d = min(float(np.min(UZ_pinn)), float(np.nanmin(UZ_fea_interp)))
+                v_max_3d = max(float(np.max(UZ_pinn)), float(np.nanmax(UZ_fea_interp)))
+
+                surf1 = ax1.plot_surface(X, Y, UZ_pinn, cmap='jet', edgecolor='none', vmin=v_min_3d, vmax=v_max_3d)
+                ax1.set_title(f"PINN Uz (E={E_val}, t1={t1_val}, t2={t2_val})")
+                ax1.set_zlim(v_min_3d, v_max_3d)
+                fig_3d.colorbar(surf1, ax=ax1, shrink=0.5, aspect=5)
+
+                surf2 = ax2.plot_surface(X, Y, UZ_fea_interp, cmap='jet', edgecolor='none', vmin=v_min_3d, vmax=v_max_3d)
+                ax2.set_title(f"FEA Uz (E={E_val}, t1={t1_val}, t2={t2_val})")
+                ax2.set_zlim(v_min_3d, v_max_3d)
+                fig_3d.colorbar(surf2, ax=ax2, shrink=0.5, aspect=5)
+
+                fig_3d.tight_layout()
+                fig_3d.savefig(os.path.join(viz_dir, f"3d_view_E{E_val:.1f}_t1{t1_val:.2f}_t2{t2_val:.2f}.png"))
+                plt.close(fig_3d)
+
+                nz_c = 51
+                z_c = np.linspace(0, float(t1_val) + float(t2_val), nz_c)
+                X_c, Z_c = np.meshgrid(x_range, z_c)
+                r_ref, mu_ref, v0_ref = _ref_params()
+
+                x_in = X_c.flatten()
+                y_in = np.ones_like(x_in) * 0.5
+                z_in = Z_c.flatten()
+                E_in = np.ones_like(x_in) * E_val
+                E2_in = np.ones_like(x_in) * E_val
+                R_in = np.ones_like(x_in) * r_ref
+                MU_in = np.ones_like(x_in) * mu_ref
+                V0_in = np.ones_like(x_in) * v0_ref
+                T1_in = np.ones_like(x_in) * t1_val
+                T2_in = np.ones_like(x_in) * t2_val
+                pts_c = np.stack([x_in, y_in, z_in, E_in, T1_in, E2_in, T2_in, R_in, MU_in, V0_in], axis=1)
+
+                with torch.no_grad():
+                    v_c = pinn(torch.tensor(pts_c, dtype=torch.float32).to(device)).cpu().numpy()
+                u_c = _u_from_v(v_c, E_val, E_val, t1_val, t2_val)
+                UZ_pinn_c = u_c[:, 2].reshape(nz_c, nx)
+
+                u_fea_3d = u_fea_ref * scale
+                y_idx = np.argmin(np.abs(y_n - 0.5))
+                uz_fea_xz = u_fea_3d[:, y_idx, :, 2]
+                interp_xz = RegularGridInterpolator((x_n, z_n), uz_fea_xz, method='linear', bounds_error=False, fill_value=None)
+                UZ_fea_c = interp_xz(np.stack([X_c.flatten(), Z_c.flatten()], axis=1)).reshape(nz_c, nx)
+
+                fig_cs, axes_cs = plt.subplots(1, 3, figsize=(18, 5))
+                v_min_c = min(float(np.min(UZ_pinn_c)), float(np.nanmin(UZ_fea_c)))
+                v_max_c = max(float(np.max(UZ_pinn_c)), float(np.nanmax(UZ_fea_c)))
+
+                im_fea_c = axes_cs[0].contourf(X_c, Z_c, UZ_fea_c, 50, cmap='jet', vmin=v_min_c, vmax=v_max_c)
+                plt.colorbar(im_fea_c, ax=axes_cs[0])
+                axes_cs[0].set_title(f"FEA Cross-Section\nPeak: {np.nanmin(UZ_fea_c):.4f}")
+                axes_cs[0].axhline(float(t1_val), color='white', linestyle='--', linewidth=1.2, alpha=0.9)
+
+                im_pinn_c = axes_cs[1].contourf(X_c, Z_c, UZ_pinn_c, 50, cmap='jet', vmin=v_min_c, vmax=v_max_c)
+                plt.colorbar(im_pinn_c, ax=axes_cs[1])
+                axes_cs[1].set_title(f"PINN Cross-Section\nPeak: {UZ_pinn_c.min():.4f}")
+                axes_cs[1].axhline(float(t1_val), color='white', linestyle='--', linewidth=1.2, alpha=0.9)
+
+                err_c = np.abs(UZ_pinn_c - UZ_fea_c)
+                im_err_c = axes_cs[2].contourf(X_c, Z_c, err_c, 50, cmap='magma')
+                plt.colorbar(im_err_c, ax=axes_cs[2])
+                axes_cs[2].set_title(f"Abs Error\nMAE: {np.nanmean(err_c):.5f}")
+                axes_cs[2].axhline(float(t1_val), color='white', linestyle='--', linewidth=1.2, alpha=0.9)
+
+                for ax in axes_cs:
+                    ax.set_xlabel('x')
+                    ax.set_ylabel('z')
+
+                fig_cs.tight_layout()
+                fig_cs.savefig(os.path.join(viz_dir, f"cross_section_E{E_val:.1f}_t1{t1_val:.2f}_t2{t2_val:.2f}.png"))
+                plt.close(fig_cs)
+
+            fig_grid.suptitle(f"Top-Surface Uz Comparison | t1={t1_val}, t2={t2_val}", fontsize=16)
+            fig_grid.tight_layout()
+            fig_grid.savefig(os.path.join(viz_dir, f"top_view_t1{t1_val:.2f}_t2{t2_val:.2f}.png"))
+            plt.close(fig_grid)
+
+    print("\nVerification Complete.")
+
 
 if __name__ == "__main__":
-    main()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+    model_path = os.path.join(PINN_WORKFLOW_DIR, "pinn_model.pth")
+    viz_dir = os.path.join(PINN_WORKFLOW_DIR, "visualization")
+
+    pinn = _load_model(model_path, device)
+    verify_parametric(pinn, device, viz_dir)

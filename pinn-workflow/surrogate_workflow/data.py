@@ -1,7 +1,7 @@
 import numpy as np
 
-from surrogate_workflow import baseline
 from surrogate_workflow import config
+from surrogate_workflow import baseline
 
 
 def latin_hypercube(n_samples: int, n_dim: int, seed: int) -> np.ndarray:
@@ -75,8 +75,9 @@ def split_indices(n_samples: int, train_frac: float, val_frac: float, seed: int,
 
 
 def generate_dataset():
-    x_raw = sample_designs(config.N_SAMPLES, config.DESIGN_RANGES, config.SEED)
-    anchors = []
+    x_lhs = sample_designs(config.N_SAMPLES, config.DESIGN_RANGES, config.SEED)
+
+    corner_anchors = []
     if bool(getattr(config, "CORNER_ANCHORS", False)):
         params = list(config.DESIGN_RANGES.keys())
         lows = [config.DESIGN_RANGES[p][0] for p in params]
@@ -85,11 +86,9 @@ def generate_dataset():
             corner = []
             for i in range(len(params)):
                 corner.append(highs[i] if (mask & (1 << i)) else lows[i])
-            anchors.append(corner)
-    n_corner_anchors = len(anchors)
-    if anchors:
-        x_raw = np.vstack([np.asarray(anchors, dtype=float), x_raw])
+            corner_anchors.append(corner)
 
+    trend_anchors = []
     if getattr(config, "TREND_ANCHOR_POINTS", 0) > 0:
         param_names = list(config.DESIGN_RANGES.keys())
         if config.TREND_SWEEP_PARAM in param_names:
@@ -101,10 +100,19 @@ def generate_dataset():
             )
             mu_mid = config.mid_design()
             idx = param_names.index(config.TREND_SWEEP_PARAM)
-            trend_anchors = np.tile(mu_mid, (config.TREND_ANCHOR_POINTS, 1))
-            trend_anchors[:, idx] = sweep
-            x_raw = np.vstack([x_raw, trend_anchors])
+            anchors = np.tile(mu_mid, (config.TREND_ANCHOR_POINTS, 1))
+            anchors[:, idx] = sweep
+            trend_anchors = anchors.tolist()
 
+    anchor_blocks = []
+    if corner_anchors:
+        anchor_blocks.append(np.asarray(corner_anchors, dtype=float))
+    if trend_anchors:
+        anchor_blocks.append(np.asarray(trend_anchors, dtype=float))
+    x_anchor = np.vstack(anchor_blocks) if anchor_blocks else np.zeros((0, x_lhs.shape[1]), dtype=float)
+    n_anchors = int(x_anchor.shape[0])
+
+    x_raw = np.vstack([x_anchor, x_lhs]) if n_anchors > 0 else x_lhs
     y_raw = np.zeros(x_raw.shape[0], dtype=float)
     for i, mu in enumerate(x_raw):
         y_raw[i] = baseline.compute_response(mu)
@@ -124,7 +132,7 @@ def generate_dataset():
         "y_transform": y_transform,
         "y_eps": y_eps,
         "param_names": list(config.DESIGN_RANGES.keys()),
-        "n_anchors": int(n_corner_anchors),
+        "n_anchors": int(n_anchors),
     }
 
 
@@ -162,4 +170,3 @@ def load_dataset(path: str) -> dict:
         "param_names": list(blob["param_names"]),
         "n_anchors": int(blob.get("n_anchors", 0)),
     }
-

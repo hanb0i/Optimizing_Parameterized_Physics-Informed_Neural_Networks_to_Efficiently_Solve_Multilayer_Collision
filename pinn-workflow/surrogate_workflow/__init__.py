@@ -1,5 +1,2 @@
-"""
-Surrogate workflow utilities for learning a lightweight proxy model over the
-trained parametric PINN.
-"""
+"""Surrogate workflow for parameter -> scalar response mapping."""
 

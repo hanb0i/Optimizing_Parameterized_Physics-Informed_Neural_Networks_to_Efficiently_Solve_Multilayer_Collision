@@ -148,8 +148,18 @@ def load_fem_supervision_data(
     
     total_target_points = None
     case_counts = None
-    thickness_power = float(os.getenv("PINN_SUPERVISION_THICKNESS_POWER", "1.5"))
-    e_power = float(os.getenv("PINN_SUPERVISION_E_POWER", "0.0"))
+    thickness_power = float(
+        os.getenv(
+            "PINN_SUPERVISION_THICKNESS_POWER",
+            str(getattr(config, "SUPERVISION_THICKNESS_POWER", 1.5)),
+        )
+    )
+    e_power = float(
+        os.getenv(
+            "PINN_SUPERVISION_E_POWER",
+            str(getattr(config, "SUPERVISION_E_POWER", 0.0)),
+        )
+    )
     if n_points_per_e is None and hasattr(config, "N_DATA_POINTS"):
         total_target_points = int(getattr(config, "N_DATA_POINTS", 0))
         n_cases = max(1, (len(e_values) ** 3) * len(t1_values) * len(t2_values) * len(t3_values))

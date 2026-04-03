@@ -107,4 +107,3 @@ def compute_response(mu: np.ndarray) -> float:
     u = _u_from_v(v, pts)
     uz = u[:, 2]
     return float(-np.min(uz))
-

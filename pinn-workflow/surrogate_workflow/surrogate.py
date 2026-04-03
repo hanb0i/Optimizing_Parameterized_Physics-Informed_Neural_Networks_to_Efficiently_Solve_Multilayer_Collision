@@ -137,4 +137,3 @@ def predict(model, x_norm: np.ndarray, device):
     with torch.no_grad():
         x_t = torch.tensor(x_norm, dtype=torch.float32, device=device)
         return model(x_t).detach().cpu().numpy().reshape(-1)
-

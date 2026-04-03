@@ -1,0 +1,33 @@
+Using device: mps
+Using p0 = 1.0
+MultiLayerPINN(
+  (layer): LayerNet(
+    (net): Sequential(
+      (0): Linear(in_features=11, out_features=64, bias=True)
+      (1): Tanh()
+      (2): Linear(in_features=64, out_features=64, bias=True)
+      (3): Tanh()
+      (4): Linear(in_features=64, out_features=64, bias=True)
+      (5): Tanh()
+      (6): Linear(in_features=64, out_features=64, bias=True)
+      (7): Tanh()
+      (8): Linear(in_features=64, out_features=3, bias=True)
+    )
+  )
+)
+Adapted first-layer weights from 8->11 inputs (inserted neutral r/mu/v0 channels).
+Warm-start loaded from ../pinn_model.pth
+Loading FEM solution for comparison...
+FEM solution not found. Training without FEM comparison.
+Supervision data disabled or not configured; training physics-only.
+Starting SOAP Pretraining...
+Epoch 0: Total Loss: 0.075394 | PDE: 0.003713 | BC_sides: 0.006176 | Free_top: 0.027971 | Free_bot: 0.027709 | Load: 0.001813 | Energy: -0.051867 | ImpactC: 0.060938 | FricC: 0.000039 | FricS: 0.000215 | ImpactInv: 0.000000 | LR: 5.00e-05 | Time: 0.5485s
+Epoch 100: Total Loss: 0.047036 | PDE: 0.001863 | BC_sides: 0.007176 | Free_top: 0.026718 | Free_bot: 0.030726 | Load: 0.001504 | Energy: -0.053447 | ImpactC: 0.055624 | FricC: 0.000037 | FricS: 0.000191 | ImpactInv: 0.000000 | LR: 1.50e-05 | Time: 20.2630s
+Epoch 200: Total Loss: 0.045176 | PDE: 0.001753 | BC_sides: 0.007506 | Free_top: 0.026555 | Free_bot: 0.030783 | Load: 0.001502 | Energy: -0.054008 | ImpactC: 0.056163 | FricC: 0.000036 | FricS: 0.000191 | ImpactInv: 0.000000 | LR: 1.35e-06 | Time: 20.2744s
+Epoch 300: Total Loss: 0.045025 | PDE: 0.001744 | BC_sides: 0.007536 | Free_top: 0.026543 | Free_bot: 0.030790 | Load: 0.001500 | Energy: -0.054058 | ImpactC: 0.056183 | FricC: 0.000036 | FricS: 0.000191 | ImpactInv: 0.000000 | LR: 1.21e-07 | Time: 20.4355s
+Epoch 400: Total Loss: 0.045013 | PDE: 0.001743 | BC_sides: 0.007540 | Free_top: 0.026543 | Free_bot: 0.030791 | Load: 0.001500 | Energy: -0.054065 | ImpactC: 0.056190 | FricC: 0.000036 | FricS: 0.000191 | ImpactInv: 0.000000 | LR: 3.64e-08 | Time: 21.4488s
+SOAP Pretraining Complete. Total Time: 104.16s
+Starting L-BFGS Fine-Tuning...
+Running 0 L-BFGS outer steps.
+Using fixed collocation set during L-BFGS for stability.
+Model saved.

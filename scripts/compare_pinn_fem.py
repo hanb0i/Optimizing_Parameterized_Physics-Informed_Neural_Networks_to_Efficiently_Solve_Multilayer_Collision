@@ -13,6 +13,15 @@ if PINN_WORKFLOW_DIR not in sys.path:
 import pinn_config as config  # noqa: F401
 import model
 
+def _u_from_v(v, pts):
+    e_scale = 0.5 * (pts[:, 3:4] + pts[:, 5:6])
+    t_scale = pts[:, 4:5] + pts[:, 6:7]
+    e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
+    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
+    scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
+    h_ref = float(getattr(config, "H", 1.0))
+    return scale * v / (e_scale ** e_pow) * (h_ref / np.clip(t_scale, 1e-8, None)) ** alpha
+
 
 def main():
     print("Loading FEA Solution...")
@@ -41,18 +50,26 @@ def main():
     if not os.path.exists(model_path):
         model_path = "pinn_model.pth"
     print(f"Loading PINN from: {model_path}")
-    pinn.load_state_dict(
-        torch.load(model_path, map_location=device, weights_only=True)
-    )
+    sd = torch.load(model_path, map_location=device, weights_only=True)
+    sd = model.adapt_legacy_state_dict(sd, pinn.state_dict())
+    pinn.load_state_dict(sd, strict=False)
     pinn.eval()
     print("PINN model loaded")
 
     pts = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
-    e_ones = np.ones((pts.shape[0], 1)) * config.E_vals[0]
-    pts = np.hstack([pts, e_ones])
+    e1_ones = np.ones((pts.shape[0], 1)) * config.E_vals[0]
+    e2_ones = np.ones((pts.shape[0], 1)) * config.E_vals[0]
+    thickness_ref = float(np.max(Z_fea))
+    t1_ones = np.ones((pts.shape[0], 1)) * (0.5 * thickness_ref)
+    t2_ones = np.ones((pts.shape[0], 1)) * (0.5 * thickness_ref)
+    r_ones = np.ones((pts.shape[0], 1)) * float(getattr(config, "RESTITUTION_REF", 0.5))
+    mu_ones = np.ones((pts.shape[0], 1)) * float(getattr(config, "FRICTION_REF", 0.3))
+    v0_ones = np.ones((pts.shape[0], 1)) * float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
+    pts = np.hstack([pts, e1_ones, t1_ones, e2_ones, t2_ones, r_ones, mu_ones, v0_ones])
     with torch.no_grad():
         pts_tensor = torch.tensor(pts, dtype=torch.float32).to(device)
-        U_pinn_flat = pinn(pts_tensor, 0).cpu().numpy()
+        v_pinn_flat = pinn(pts_tensor, 0).cpu().numpy()
+        U_pinn_flat = _u_from_v(v_pinn_flat, pts)
 
     U_pinn = U_pinn_flat.reshape(U_fea.shape)
     print("PINN predictions computed")
