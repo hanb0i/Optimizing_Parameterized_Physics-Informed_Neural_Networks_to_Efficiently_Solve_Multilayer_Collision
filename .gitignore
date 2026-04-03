@@ -7,3 +7,4 @@ pinn-workflow/visualization_three_layer/
 pinn-workflow/supervision_cache/
 pinn-workflow/checkpoints/
 pinn-workflow/surrogate_workflow/outputs/
+pinn-workflow/pinn_model.pth.tune*_bak

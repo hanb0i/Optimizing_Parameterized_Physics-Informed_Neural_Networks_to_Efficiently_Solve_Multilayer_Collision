@@ -96,7 +96,8 @@ EPOCHS_LBFGS = 0
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
-    'pde': 6.0,
+    # Tuned for 3-layer parametric sweep (<5% worst MAE in compare_three_layer_pinn_fem.py)
+    'pde': 10.0,
     'bc': 0.7,      # Slightly softer sides so load can gather more budget
     'load': 5.0, # Optimal load weight
     'energy': 0.63, # Per user request
@@ -104,8 +105,8 @@ WEIGHTS = {
     'impact_contact': 0.0002,   # Reduced to preserve FEA parity in no-supervision mode
     'friction_coulomb': 0.001,  # Reduced to preserve FEA parity in no-supervision mode
     'friction_stick': 0.0005,   # Reduced to preserve FEA parity in no-supervision mode
-    'interface_u': 150.0,
-    'data': 5.0
+    'interface_u': 300.0,
+    'data': 400.0
 }
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -180,9 +181,9 @@ N_SIDES = 2000  # Clamped side faces
 N_TOP_LOAD = 6000  # Load patch (more points to boost displacement)
 N_TOP_FREE = 2000  # Top free surface
 N_BOTTOM = 2000  # Bottom free surface
-N_INTERFACE = _env_int("PINN_N_INTERFACE", 8000)  # Exact points on the layer interface
+N_INTERFACE = _env_int("PINN_N_INTERFACE", 16000)  # Exact points on the layer interface
 UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
-INTERFACE_SAMPLE_FRACTION = _env_float("PINN_INTERFACE_SAMPLE_FRACTION", 0.50)
+INTERFACE_SAMPLE_FRACTION = _env_float("PINN_INTERFACE_SAMPLE_FRACTION", 0.75)
 INTERFACE_BAND = 0.05 * H
 # Bias a portion of patch samples toward the center.
 PATCH_CENTER_BIAS_FRACTION = 0.8
@@ -200,7 +201,7 @@ FOURIER_DIM = 0 # Number of Fourier frequencies
 FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 
 # Hybrid / Parametric Training Data
-N_DATA_POINTS = _env_int("PINN_N_DATA_POINTS", 24000)
+N_DATA_POINTS = _env_int("PINN_N_DATA_POINTS", 36000)
 DATA_E_VALUES = [1.0, 10.0]
 DATA_T1_VALUES = [0.02, 0.10]
 DATA_T2_VALUES = [0.02, 0.10]
@@ -211,6 +212,9 @@ EVAL_T1_VALUES = [0.02, 0.10]
 EVAL_T2_VALUES = [0.02, 0.10]
 EVAL_T3_VALUES = [0.02, 0.10]
 USE_SUPERVISION_DATA = True
+
+# Default supervision allocation bias toward thin stacks (overridable via env).
+SUPERVISION_THICKNESS_POWER = 3.0
 
 DATA_E_VALUES = _env_float_list("PINN_DATA_E_VALUES", DATA_E_VALUES)
 DATA_T1_VALUES = _env_float_list("PINN_DATA_T1_VALUES", DATA_T1_VALUES)
