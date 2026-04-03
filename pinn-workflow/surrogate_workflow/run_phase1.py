@@ -48,24 +48,7 @@ def build_loaders(dataset, seed: int):
     rel_eps = float(getattr(config, "RELATIVE_LOSS_EPS", 1e-3))
     weights = (1.0 / (y_raw ** 2 + rel_eps ** 2)).astype(np.float32)
 
-    x_train = x[train_idx]
-    y_train = y[train_idx]
-    w_train = weights[train_idx]
-
-    # Oversample anchor points (the first n_anchors rows) inside the training set.
-    n_anchors = int(dataset.get("n_anchors", 0))
-    anchor_repeat = int(getattr(config, "ANCHOR_REPEAT", 1))
-    if n_anchors > 0 and anchor_repeat > 1:
-        is_anchor = train_idx < n_anchors
-        if np.any(is_anchor):
-            xa = x_train[is_anchor]
-            ya = y_train[is_anchor]
-            wa = w_train[is_anchor]
-            x_train = np.concatenate([x_train, np.repeat(xa, anchor_repeat - 1, axis=0)], axis=0)
-            y_train = np.concatenate([y_train, np.repeat(ya, anchor_repeat - 1, axis=0)], axis=0)
-            w_train = np.concatenate([w_train, np.repeat(wa, anchor_repeat - 1, axis=0)], axis=0)
-
-    train_ds = TensorDataset(torch.from_numpy(x_train), torch.from_numpy(y_train), torch.from_numpy(w_train))
+    train_ds = TensorDataset(torch.from_numpy(x[train_idx]), torch.from_numpy(y[train_idx]), torch.from_numpy(weights[train_idx]))
     val_ds = TensorDataset(torch.from_numpy(x[val_idx]), torch.from_numpy(y[val_idx]), torch.from_numpy(weights[val_idx]))
     test_ds = TensorDataset(torch.from_numpy(x[test_idx]), torch.from_numpy(y[test_idx]), torch.from_numpy(weights[test_idx]))
 

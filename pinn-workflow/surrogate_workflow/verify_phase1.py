@@ -123,26 +123,13 @@ def _plot_param_grid(
     fig.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
-def _predict_single(model, dataset: dict, device: torch.device, mu: np.ndarray) -> float:
-    x_norm, _, _ = data_utils.normalize_inputs(mu.reshape(1, -1), config.DESIGN_RANGES)
-    y_norm = surrogate.predict(model, x_norm, device)[0]
-    return float(
-        validate.denormalize_y(
-            y_norm,
-            dataset["y_min"],
-            dataset["y_max"],
-            dataset.get("y_transform", "identity"),
-            dataset.get("y_eps", 1e-12),
-        )
-    )
-
 
 def main():
     parser = argparse.ArgumentParser(description="Verify Phase 1 surrogate outputs")
     parser.add_argument("--device", default=None, help="Override device (cpu/cuda/mps)")
     parser.add_argument("--grid", type=int, default=11, help="Grid resolution for verification plot")
     parser.add_argument("--x-param", default="E1", help="X-axis design param for grid plot")
-    parser.add_argument("--y-param", default=None, help="Y-axis design param for grid plot")
+    parser.add_argument("--y-param", default="E3", help="Y-axis design param for grid plot")
     args = parser.parse_args()
 
     device = torch.device(args.device) if args.device else (
@@ -152,11 +139,6 @@ def main():
 
     dataset = data_utils.load_dataset(config.DATASET_PATH)
     model, _payload = _load_trained_model(device)
-
-    if args.y_param is None:
-        # Default to the last layer's modulus so it works for 2-layer and 3-layer modes.
-        e_params = [k for k in config.DESIGN_RANGES.keys() if k.startswith("E")]
-        args.y_param = e_params[-1] if e_params else list(config.DESIGN_RANGES.keys())[-1]
 
     n_samples = dataset["x_norm"].shape[0]
     train_idx, val_idx, test_idx = data_utils.split_indices(
@@ -184,62 +166,6 @@ def main():
     worst = float(np.max(rel_err) * 100.0)
     print(f"Test MAE: {mae:.6e}")
     print(f"Test rel error p50/p95/worst: {p50:.2f}% / {p95:.2f}% / {worst:.2f}%")
-
-    # Corner check (targets the thickness/elasticity extremes used in PINN sweeps).
-    param_names = list(config.DESIGN_RANGES.keys())
-    lows = [config.DESIGN_RANGES[p][0] for p in param_names]
-    highs = [config.DESIGN_RANGES[p][1] for p in param_names]
-    corners = []
-    for mask in range(1 << len(param_names)):
-        corner = []
-        for i in range(len(param_names)):
-            corner.append(highs[i] if (mask & (1 << i)) else lows[i])
-        corners.append(np.asarray(corner, dtype=float))
-    y_corner_true = np.asarray([baseline.compute_response(mu) for mu in corners], dtype=float)
-    x_corner_norm, _, _ = data_utils.normalize_inputs(np.stack(corners, axis=0), config.DESIGN_RANGES)
-    y_corner_norm = surrogate.predict(model, x_corner_norm, device)
-    y_corner_pred = validate.denormalize_y(
-        y_corner_norm,
-        dataset["y_min"],
-        dataset["y_max"],
-        dataset.get("y_transform", _payload.get("y_transform", "identity")),
-        dataset.get("y_eps", _payload.get("y_eps", 1e-12)),
-    )
-    corner_rel = _relative_error(y_corner_true, y_corner_pred)
-    worst_idx = int(np.argmax(corner_rel)) if corner_rel.size else -1
-    worst_pct = float(np.max(corner_rel) * 100.0) if corner_rel.size else 0.0
-    print(f"Corner rel error worst: {worst_pct:.2f}%  (n={len(corners)})")
-    if worst_idx >= 0:
-        mu_worst = corners[worst_idx]
-        print(
-            f"  Worst corner mu={mu_worst.tolist()} y_true={float(y_corner_true[worst_idx]):.6g} "
-            f"y_pred={float(y_corner_pred[worst_idx]):.6g}"
-        )
-
-    # Two-layer "sweep case" check: matches the extreme settings used in compare_two_layer_pinn_fem.py.
-    if len(param_names) == 4:
-        e_low, e_high = config.DESIGN_RANGES["E1"]
-        t1_low, t1_high = config.DESIGN_RANGES["t1"]
-        t2_low, t2_high = config.DESIGN_RANGES["t2"]
-        sweep_cases = [
-            ("two_layer_soft_bottom", np.array([e_low, t1_low, e_high, t2_high], dtype=float)),
-            ("two_layer_soft_top", np.array([e_high, t1_high, e_low, t2_low], dtype=float)),
-        ]
-        for name, mu in sweep_cases:
-            y_true = float(baseline.compute_response(mu))
-            y_pred = _predict_single(model, dataset, device, mu)
-            rel = float(_relative_error(np.array([y_true]), np.array([y_pred]))[0] * 100.0)
-            print(f"{name} rel error: {rel:.2f}% (y_true={y_true:.6g}, y_pred={y_pred:.6g})")
-
-        # E-grid at (t1_min, t2_min): 2x2 E sweep points.
-        grid = []
-        for e1 in (e_low, e_high):
-            for e2 in (e_low, e_high):
-                grid.append(np.array([e1, t1_low, e2, t2_low], dtype=float))
-        y_true = np.asarray([baseline.compute_response(mu) for mu in grid], dtype=float)
-        y_pred = np.asarray([_predict_single(model, dataset, device, mu) for mu in grid], dtype=float)
-        rel = _relative_error(y_true, y_pred)
-        print(f"Two-layer E-grid (t1_min,t2_min) worst rel error: {float(np.max(rel) * 100.0):.2f}%")
 
     _plot_rel_error_hist(rel_err, os.path.join(config.PLOTS_DIR, "test_rel_error_hist.png"))
     _plot_param_grid(

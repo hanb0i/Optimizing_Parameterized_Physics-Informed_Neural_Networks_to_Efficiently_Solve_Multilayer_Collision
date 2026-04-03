@@ -22,12 +22,6 @@ Or run the repo wrapper (sets `MPLCONFIGDIR` and keeps PINN compliance scaling c
 ./scripts/run_three_layer_surrogate.sh
 ```
 
-Two-layer surrogate (E1,t1,E2,t2) embedded into the 3-layer PINN input layout:
-
-```bash
-./scripts/run_two_layer_surrogate.sh --n-samples 200 --max-epochs 3500
-```
-
 Override dataset/training size for quick smoke runs:
 
 ```bash

@@ -66,23 +66,11 @@ def _get_pinn():
 
 def compute_response(mu: np.ndarray) -> float:
     """
-    mu: [E1, t1, ..., EN, tN] (N=2 or 3 supported)
+    mu: [E1, t1, E2, t2, E3, t3]
     Returns: peak downward vertical displacement on the top surface (positive scalar).
     """
     pinn, device = _get_pinn()
-    mu = np.asarray(mu, dtype=float).reshape(-1)
-    if mu.size == 6:
-        e1_val, t1_val, e2_val, t2_val, e3_val, t3_val = [float(v) for v in mu]
-    elif mu.size == 4:
-        # Embed a 2-layer design into the repo's 3-layer param layout:
-        # - set t3=0 so total thickness is t1+t2
-        # - set E3 to a neutral average of the two layers
-        e1_val, t1_val, e2_val, t2_val = [float(v) for v in mu]
-        e3_val = 0.5 * (e1_val + e2_val)
-        t3_val = 0.0
-    else:
-        raise ValueError(f"Expected mu with 4 (2-layer) or 6 (3-layer) entries, got {mu.size}")
-
+    e1_val, t1_val, e2_val, t2_val, e3_val, t3_val = [float(v) for v in mu]
     thickness = float(t1_val) + float(t2_val) + float(t3_val)
 
     nx = int(os.getenv("SURROGATE_TOP_NX", "11"))

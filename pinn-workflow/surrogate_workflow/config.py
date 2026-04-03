@@ -6,11 +6,6 @@ import pinn_config as pc
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-# Number of layers for the surrogate design vector.
-# Default matches this repo's current 3-layer PINN, but can be overridden to build
-# a 2-layer surrogate (embedded into the 3-layer PINN input layout).
-NUM_LAYERS = int(os.getenv("SURROGATE_NUM_LAYERS", "3"))
-
 # Output paths
 OUTPUT_DIR = os.path.join(ROOT_DIR, "surrogate_workflow", "outputs")
 PLOTS_DIR = os.path.join(OUTPUT_DIR, "plots")
@@ -18,47 +13,36 @@ DATASET_PATH = os.path.join(OUTPUT_DIR, "phase1_dataset.npz")
 MODEL_PATH = os.path.join(OUTPUT_DIR, "surrogate_model.pt")
 SUMMARY_PATH = os.path.join(OUTPUT_DIR, "phase1_summary.txt")
 
-def _t_range(i: int):
-    name = f"T{i}_RANGE"
-    if hasattr(pc, name):
-        lo, hi = getattr(pc, name)
-        return float(lo), float(hi)
-    h = float(getattr(pc, "H", 0.1))
-    guess = h / max(int(NUM_LAYERS), 1)
-    return float(guess), float(guess)
-
-
-# Design parameters for a multi-layer plate PINN surrogate (E_i, t_i for each layer).
-DESIGN_PARAMS = []
-DESIGN_RANGES = {}
-for i in range(1, int(NUM_LAYERS) + 1):
-    DESIGN_PARAMS.extend([f"E{i}", f"t{i}"])
-    DESIGN_RANGES[f"E{i}"] = (float(pc.E_RANGE[0]), float(pc.E_RANGE[1]))
-    DESIGN_RANGES[f"t{i}"] = _t_range(i)
+# Design parameters for the three-layer plate PINN.
+DESIGN_PARAMS = ["E1", "t1", "E2", "t2", "E3", "t3"]
+DESIGN_RANGES = {
+    "E1": (float(pc.E_RANGE[0]), float(pc.E_RANGE[1])),
+    "t1": (float(pc.T1_RANGE[0]), float(pc.T1_RANGE[1])),
+    "E2": (float(pc.E_RANGE[0]), float(pc.E_RANGE[1])),
+    "t2": (float(pc.T2_RANGE[0]), float(pc.T2_RANGE[1])),
+    "E3": (float(pc.E_RANGE[0]), float(pc.E_RANGE[1])),
+    "t3": (float(pc.T3_RANGE[0]), float(pc.T3_RANGE[1])),
+}
 
 # Dataset generation
-N_SAMPLES = int(os.getenv("SURROGATE_N_SAMPLES", "2000"))
-SEED = int(os.getenv("SURROGATE_SEED", "7"))
-TRAIN_FRACTION = float(os.getenv("SURROGATE_TRAIN_FRACTION", "0.8"))
-VAL_FRACTION = float(os.getenv("SURROGATE_VAL_FRACTION", "0.1"))
+N_SAMPLES = 2000
+SEED = 7
+TRAIN_FRACTION = 0.8
+VAL_FRACTION = 0.1
 
 # Model hyperparameters
-HIDDEN_LAYERS = int(os.getenv("SURROGATE_HIDDEN_LAYERS", "4"))
-HIDDEN_UNITS = int(os.getenv("SURROGATE_HIDDEN_UNITS", "256"))
-ACTIVATION = os.getenv("SURROGATE_ACTIVATION", "tanh")
-FOURIER_DIM = int(os.getenv("SURROGATE_FOURIER_DIM", "0"))
-FOURIER_SCALE = float(os.getenv("SURROGATE_FOURIER_SCALE", "1.0"))
+HIDDEN_LAYERS = 4
+HIDDEN_UNITS = 256
+ACTIVATION = "tanh"
+FOURIER_DIM = 0
+FOURIER_SCALE = 1.0
 
 # Training
-LEARNING_RATE = float(os.getenv("SURROGATE_LEARNING_RATE", "1e-3"))
-MAX_EPOCHS = int(os.getenv("SURROGATE_MAX_EPOCHS", "6000"))
-BATCH_SIZE = int(os.getenv("SURROGATE_BATCH_SIZE", "64"))
-PATIENCE = int(os.getenv("SURROGATE_PATIENCE", "400"))
-MIN_DELTA = float(os.getenv("SURROGATE_MIN_DELTA", "1e-6"))
-
-# Oversample corner anchors in the training loader to reduce worst-case errors at
-# thickness/E extremes (used by PINN sweep comparisons).
-ANCHOR_REPEAT = int(os.getenv("SURROGATE_ANCHOR_REPEAT", "1"))
+LEARNING_RATE = 1e-3
+MAX_EPOCHS = 6000
+BATCH_SIZE = 64
+PATIENCE = 400
+MIN_DELTA = 1e-6
 
 # Validation and sweeps
 TREND_SWEEP_PARAM = "E1"
@@ -73,7 +57,7 @@ CORNER_ANCHORS = True
 Y_TRANSFORM = "log"  # "identity" | "log"
 Y_EPS = 1e-6
 
-# Loss mode: with `Y_TRANSFORM="log"`, plain MSE effectively targets relative accuracy.
+# Loss mode: using log(y) + MSE tends to reduce relative worst-case error.
 LOSS_MODE = "mse"  # "mse" | "relative_mse"
 RELATIVE_LOSS_EPS = 1e-3
 
