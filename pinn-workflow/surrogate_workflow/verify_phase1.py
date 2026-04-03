@@ -123,6 +123,60 @@ def _plot_param_grid(
     fig.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
+def _predict_single(model, dataset: dict, device: torch.device, mu: np.ndarray) -> float:
+    x_norm, _, _ = data_utils.normalize_inputs(mu.reshape(1, -1), config.DESIGN_RANGES)
+    y_norm = surrogate.predict(model, x_norm, device)[0]
+    return float(
+        validate.denormalize_y(
+            y_norm,
+            dataset["y_min"],
+            dataset["y_max"],
+            dataset.get("y_transform", "identity"),
+            dataset.get("y_eps", 1e-12),
+        )
+    )
+
+
+def _three_layer_case_checks(model, dataset: dict, device: torch.device):
+    param_names = list(config.DESIGN_RANGES.keys())
+    if param_names != ["E1", "t1", "E2", "t2", "E3", "t3"]:
+        return
+
+    e_low, e_high = config.DESIGN_RANGES["E1"]
+    t1_low, t1_high = config.DESIGN_RANGES["t1"]
+    t2_low, t2_high = config.DESIGN_RANGES["t2"]
+    t3_low, t3_high = config.DESIGN_RANGES["t3"]
+
+    cases = [
+        ("three_layer_soft_bottom", np.array([e_low, t1_high, e_high, t2_low, e_high, t3_low], dtype=float)),
+        ("three_layer_soft_middle", np.array([e_high, t1_low, e_low, t2_high, e_high, t3_low], dtype=float)),
+        ("three_layer_soft_top", np.array([e_high, t1_low, e_high, t2_low, e_low, t3_high], dtype=float)),
+    ]
+
+    worst = 0.0
+    for name, mu in cases:
+        y_true = float(baseline.compute_response(mu))
+        y_pred = _predict_single(model, dataset, device, mu)
+        rel = float(_relative_error(np.array([y_true]), np.array([y_pred]))[0] * 100.0)
+        worst = max(worst, rel)
+        print(f"{name} rel error: {rel:.2f}% (y_true={y_true:.6g}, y_pred={y_pred:.6g})")
+
+    # Thin-stack E grid at (t1_min,t2_min,t3_min): 2x2x2 E sweep points.
+    grid = []
+    for e1 in (e_low, e_high):
+        for e2 in (e_low, e_high):
+            for e3 in (e_low, e_high):
+                grid.append(np.array([e1, t1_low, e2, t2_low, e3, t3_low], dtype=float))
+    y_true = np.asarray([baseline.compute_response(mu) for mu in grid], dtype=float)
+    y_pred = np.asarray([_predict_single(model, dataset, device, mu) for mu in grid], dtype=float)
+    rel = _relative_error(y_true, y_pred)
+    worst_grid = float(np.max(rel) * 100.0) if rel.size else 0.0
+    print(f"Three-layer thin-stack E-grid worst rel error: {worst_grid:.2f}% (n={len(grid)})")
+    worst = max(worst, worst_grid)
+
+    target = float(getattr(config, "TARGET_REL_ERR_PCT", 5.0))
+    print(f"Three-layer case-check worst rel error: {worst:.2f}% (target {target:.2f}%)")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Verify Phase 1 surrogate outputs")
@@ -166,6 +220,8 @@ def main():
     worst = float(np.max(rel_err) * 100.0)
     print(f"Test MAE: {mae:.6e}")
     print(f"Test rel error p50/p95/worst: {p50:.2f}% / {p95:.2f}% / {worst:.2f}%")
+
+    _three_layer_case_checks(model, dataset, device)
 
     _plot_rel_error_hist(rel_err, os.path.join(config.PLOTS_DIR, "test_rel_error_hist.png"))
     _plot_param_grid(

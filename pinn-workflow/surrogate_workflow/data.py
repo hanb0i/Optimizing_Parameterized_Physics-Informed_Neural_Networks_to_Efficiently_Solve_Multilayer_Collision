@@ -75,8 +75,9 @@ def split_indices(n_samples: int, train_frac: float, val_frac: float, seed: int,
 
 
 def generate_dataset():
-    x_raw = sample_designs(config.N_SAMPLES, config.DESIGN_RANGES, config.SEED)
-    anchors = []
+    x_lhs = sample_designs(config.N_SAMPLES, config.DESIGN_RANGES, config.SEED)
+
+    corner_anchors = []
     if bool(getattr(config, "CORNER_ANCHORS", False)):
         params = list(config.DESIGN_RANGES.keys())
         lows = [config.DESIGN_RANGES[p][0] for p in params]
@@ -85,10 +86,9 @@ def generate_dataset():
             corner = []
             for i in range(len(params)):
                 corner.append(highs[i] if (mask & (1 << i)) else lows[i])
-            anchors.append(corner)
-    n_anchors = len(anchors)
-    if anchors:
-        x_raw = np.vstack([np.asarray(anchors, dtype=float), x_raw])
+            corner_anchors.append(corner)
+
+    trend_anchors = []
     if getattr(config, "TREND_ANCHOR_POINTS", 0) > 0:
         param_names = list(config.DESIGN_RANGES.keys())
         if config.TREND_SWEEP_PARAM in param_names:
@@ -102,7 +102,17 @@ def generate_dataset():
             idx = param_names.index(config.TREND_SWEEP_PARAM)
             anchors = np.tile(mu_mid, (config.TREND_ANCHOR_POINTS, 1))
             anchors[:, idx] = sweep
-            x_raw = np.vstack([x_raw, anchors])
+            trend_anchors = anchors.tolist()
+
+    anchor_blocks = []
+    if corner_anchors:
+        anchor_blocks.append(np.asarray(corner_anchors, dtype=float))
+    if trend_anchors:
+        anchor_blocks.append(np.asarray(trend_anchors, dtype=float))
+    x_anchor = np.vstack(anchor_blocks) if anchor_blocks else np.zeros((0, x_lhs.shape[1]), dtype=float)
+    n_anchors = int(x_anchor.shape[0])
+
+    x_raw = np.vstack([x_anchor, x_lhs]) if n_anchors > 0 else x_lhs
     y_raw = np.zeros(x_raw.shape[0], dtype=float)
     for i, mu in enumerate(x_raw):
         y_raw[i] = baseline.compute_response(mu)
