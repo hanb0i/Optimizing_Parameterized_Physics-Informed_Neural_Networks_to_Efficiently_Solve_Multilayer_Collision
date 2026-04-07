@@ -81,7 +81,7 @@ def train():
     print(f"Using device: {device}")
     print(f"Using p0 = {config.p0}")
 
-    epochs_adam = int(os.getenv("PINN_EPOCHS_ADAM", str(config.EPOCHS_ADAM)))
+    epochs_soap = int(os.getenv("PINN_EPOCHS_SOAP", str(config.EPOCHS_SOAP)))
     epochs_lbfgs = int(os.getenv("PINN_EPOCHS_LBFGS", str(config.EPOCHS_LBFGS)))
     
     pinn = model.MultiLayerPINN().to(device)
@@ -102,7 +102,7 @@ def train():
         config.USE_HARD_SIDE_BC = False
         pinn.set_hard_bc(False)
     
-    optimizer_adam = soap.SOAP(
+    optimizer_soap = soap.SOAP(
         pinn.parameters(),
         lr=config.LEARNING_RATE,
         betas=(0.95, 0.95),
@@ -110,7 +110,7 @@ def train():
         precondition_frequency=config.SOAP_PRECONDITION_FREQUENCY,
     )
     
-    scheduler = optim.lr_scheduler.StepLR(optimizer_adam, step_size=config.EPOCHS_ADAM//5, gamma=0.3)
+    scheduler = optim.lr_scheduler.StepLR(optimizer_soap, step_size=config.EPOCHS_SOAP//5, gamma=0.3)
     
     print("Loading FEM solution for comparison...")
     try:
@@ -157,7 +157,7 @@ def train():
     else:
         print("Supervision data disabled or not configured; training physics-only.")
  
-    adam_history = {
+    soap_history = {
         'total': [],
         'pde': [],
         'bc_sides': [],
@@ -197,8 +197,8 @@ def train():
     start_time = time.time()
     last_time = start_time
     
-    for epoch in range(epochs_adam):
-        optimizer_adam.zero_grad()
+    for epoch in range(epochs_soap):
+        optimizer_soap.zero_grad()
 
         if config.FORCE_SOFT_SIDE_BC_FROM_START:
             use_hard_bc = False
@@ -218,21 +218,21 @@ def train():
         weights = get_loss_weights(epoch, use_hard_bc)
         loss_val, losses = physics.compute_loss(pinn, training_data, device, weights=weights)
         loss_val.backward()
-        optimizer_adam.step()
+        optimizer_soap.step()
         scheduler.step()
         
-        adam_history['total'].append(loss_val.item())
-        adam_history['pde'].append(losses['pde'].item())
-        adam_history['bc_sides'].append(losses['bc_sides'].item())
-        adam_history['free_top'].append(losses['free_top'].item())
-        adam_history['free_bot'].append(losses['free_bot'].item())
-        adam_history['load'].append(losses['load'].item())
-        adam_history['energy'].append(losses['energy'].item())
-        adam_history['impact_invariance'].append(losses.get('impact_invariance', torch.tensor(0.0)).item())
-        adam_history['impact_contact'].append(losses.get('impact_contact', torch.tensor(0.0)).item())
-        adam_history['friction_coulomb'].append(losses.get('friction_coulomb', torch.tensor(0.0)).item())
-        adam_history['friction_stick'].append(losses.get('friction_stick', torch.tensor(0.0)).item())
-        adam_history['interface_u'].append(losses.get('interface_u', torch.tensor(0.0)).item())
+        soap_history['total'].append(loss_val.item())
+        soap_history['pde'].append(losses['pde'].item())
+        soap_history['bc_sides'].append(losses['bc_sides'].item())
+        soap_history['free_top'].append(losses['free_top'].item())
+        soap_history['free_bot'].append(losses['free_bot'].item())
+        soap_history['load'].append(losses['load'].item())
+        soap_history['energy'].append(losses['energy'].item())
+        soap_history['impact_invariance'].append(losses.get('impact_invariance', torch.tensor(0.0)).item())
+        soap_history['impact_contact'].append(losses.get('impact_contact', torch.tensor(0.0)).item())
+        soap_history['friction_coulomb'].append(losses.get('friction_coulomb', torch.tensor(0.0)).item())
+        soap_history['friction_stick'].append(losses.get('friction_stick', torch.tensor(0.0)).item())
+        soap_history['interface_u'].append(losses.get('interface_u', torch.tensor(0.0)).item())
         
         if epoch % 100 == 0:
             current_time = time.time()
@@ -247,9 +247,9 @@ def train():
                     diff = np.abs(u_pinn_flat - u_fea_flat)
                     mae = np.mean(diff)
                     max_err = np.max(diff)
-                    adam_history['fem_mae'].append(mae)
-                    adam_history['fem_max_err'].append(max_err)
-                    adam_history['epochs'].append(epoch)
+                    soap_history['fem_mae'].append(mae)
+                    soap_history['fem_max_err'].append(max_err)
+                    soap_history['epochs'].append(epoch)
                     
                 print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
                       f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
@@ -350,7 +350,7 @@ def train():
         torch.save(pinn.state_dict(), _artifact_path("pinn_model.pth"))
             
     torch.save(pinn.state_dict(), _artifact_path("pinn_model.pth"))
-    loss_history = {'adam': adam_history, 'lbfgs': lbfgs_history}
+    loss_history = {'soap': soap_history, 'lbfgs': lbfgs_history}
     np.save(_artifact_path("loss_history.npy"), loss_history)
     print(f"Model saved to {_artifact_path('pinn_model.pth')}")
     return pinn

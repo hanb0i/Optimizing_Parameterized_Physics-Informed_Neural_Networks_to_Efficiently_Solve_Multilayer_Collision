@@ -3,11 +3,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-def plot_loss_history(loss_history, adam_epochs=None, save_path="."):
+def plot_loss_history(loss_history, soap_epochs=None, save_path="."):
     plt.figure(figsize=(10, 6))
     plt.semilogy(loss_history, label='Total Loss')
-    if adam_epochs is not None and adam_epochs < len(loss_history):
-        plt.axvline(x=adam_epochs, color='r', linestyle='--', label='L-BFGS Start')
+    if soap_epochs is not None and soap_epochs < len(loss_history):
+        plt.axvline(x=soap_epochs, color='r', linestyle='--', label='L-BFGS Start')
         plt.legend()
     plt.title("Training Loss vs Epochs")
     plt.xlabel("Epochs")
@@ -18,9 +18,9 @@ def plot_loss_history(loss_history, adam_epochs=None, save_path="."):
     print(f"Saved loss_history_plot.png to {save_path}")
 
     # Separate L-BFGS Plot
-    if adam_epochs is not None and adam_epochs < len(loss_history):
+    if soap_epochs is not None and soap_epochs < len(loss_history):
         plt.figure(figsize=(10, 6))
-        lbfgs_hist = loss_history[adam_epochs:]
+        lbfgs_hist = loss_history[soap_epochs:]
         plt.plot(lbfgs_hist, 'b-o', markersize=3)
         plt.title("L-BFGS Training Loss Phase")
         plt.xlabel("L-BFGS Steps (x20 iterations)")

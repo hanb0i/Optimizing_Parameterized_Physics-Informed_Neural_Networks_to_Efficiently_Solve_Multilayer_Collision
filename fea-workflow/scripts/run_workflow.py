@@ -48,7 +48,7 @@ def main():
     # Plot Loss History
     try:
         loss_hist = np.load("loss_history.npy")
-        plot_loss_history(loss_hist, adam_epochs=pinn_config.EPOCHS_ADAM, save_path=os.path.dirname(__file__))
+        plot_loss_history(loss_hist, soap_epochs=pinn_config.EPOCHS_SOAP, save_path=os.path.dirname(__file__))
     except FileNotFoundError:
         print("Could not find loss_history.npy to plot.")
     

@@ -122,7 +122,7 @@ N_TOP_FREE = 2000      # Free surface points
 N_INTERFACE = 16000    # Interface points
 
 # Training
-EPOCHS_ADAM = 400      # SOAP optimizer steps
+EPOCHS_SOAP = 400      # SOAP optimizer steps
 EPOCHS_LBFGS = 0       # L-BFGS fine-tuning steps
 LEARNING_RATE = 1e-3
 ```
