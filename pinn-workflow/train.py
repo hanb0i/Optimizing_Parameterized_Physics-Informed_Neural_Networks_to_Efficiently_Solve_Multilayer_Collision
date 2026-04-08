@@ -212,7 +212,16 @@ def train():
         
         if epoch % 500 == 0 and epoch > 0:
             residuals = physics.compute_residuals(pinn, training_data, device)
+            
+            x_data_backup = training_data.get('x_data')
+            u_data_backup = training_data.get('u_data')
+            
             training_data = data.get_data(prev_data=training_data, residuals=residuals)
+            
+            if x_data_backup is not None and u_data_backup is not None:
+                training_data['x_data'] = x_data_backup
+                training_data['u_data'] = u_data_backup
+                
             print(f"  Resampled with residual-based adaptive sampling at epoch {epoch}")
             
         weights = get_loss_weights(epoch, use_hard_bc)
