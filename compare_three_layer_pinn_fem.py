@@ -43,11 +43,12 @@ def _ref_params():
 
 def _load_pinn(device):
     pinn = model.MultiLayerPINN().to(device)
-    model_path = os.path.join(PINN_WORKFLOW_DIR, "pinn_model.pth")
+    model_path = os.getenv("PINN_MODEL_PATH") or os.path.join(PINN_WORKFLOW_DIR, "pinn_model.pth")
     sd = torch.load(model_path, map_location=device, weights_only=True)
     sd = model.adapt_legacy_state_dict(sd, pinn.state_dict())
     pinn.load_state_dict(sd, strict=False)
     pinn.eval()
+    print(f"Loaded PINN checkpoint: {model_path}")
     return pinn
 
 
@@ -267,7 +268,7 @@ def main():
     else:
         device = torch.device("cpu")
 
-    output_dir = os.path.join(PINN_WORKFLOW_DIR, "visualization_three_layer")
+    output_dir = os.getenv("PINN_EVAL_OUT_DIR") or os.path.join(PINN_WORKFLOW_DIR, "visualization_three_layer")
     os.makedirs(output_dir, exist_ok=True)
 
     pinn = _load_pinn(device)

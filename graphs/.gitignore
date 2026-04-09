@@ -1,0 +1,11 @@
+# Generated figures
+figures/*.png
+figures/*.pdf
+
+# Generated datasets / logs / checkpoints
+data/*
+
+# Keep directory structure
+!data/.gitkeep
+!figures/.gitkeep
+

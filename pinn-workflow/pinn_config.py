@@ -114,11 +114,17 @@ DISPLACEMENT_COMPLIANCE_SCALE = _env_float("PINN_DISPLACEMENT_COMPLIANCE_SCALE",
 THICKNESS_COMPLIANCE_ALPHA = _env_float("PINN_THICKNESS_COMPLIANCE_ALPHA", THICKNESS_COMPLIANCE_ALPHA)
 E_COMPLIANCE_POWER = _env_float("PINN_E_COMPLIANCE_POWER", E_COMPLIANCE_POWER)
 
+# Allow loss-weight overrides from the environment (useful for ablations).
 for _k, _env in [
     ("pde", "PINN_W_PDE"),
-    ("interface_u", "PINN_W_INTERFACE_U"),
-    ("load", "PINN_W_LOAD"),
     ("bc", "PINN_W_BC"),
+    ("load", "PINN_W_LOAD"),
+    ("energy", "PINN_W_ENERGY"),
+    ("impact_invariance", "PINN_W_IMPACT_INVARIANCE"),
+    ("impact_contact", "PINN_W_IMPACT_CONTACT"),
+    ("friction_coulomb", "PINN_W_FRICTION_COULOMB"),
+    ("friction_stick", "PINN_W_FRICTION_STICK"),
+    ("interface_u", "PINN_W_INTERFACE_U"),
     ("data", "PINN_W_DATA"),
 ]:
     if _env in os.environ:
@@ -163,9 +169,9 @@ EVAL_E_VALUES = [1.0, 10.0]
 EVAL_T1_VALUES = [0.02, 0.10]
 EVAL_T2_VALUES = [0.02, 0.10]
 EVAL_T3_VALUES = [0.02, 0.10]
-USE_SUPERVISION_DATA = True
+USE_SUPERVISION_DATA = _env_flag("PINN_USE_SUPERVISION_DATA", True)
 
-SUPERVISION_THICKNESS_POWER = 3.0
+SUPERVISION_THICKNESS_POWER = _env_float("PINN_SUPERVISION_THICKNESS_POWER", 3.0)
 
 DATA_E_VALUES = _env_float_list("PINN_DATA_E_VALUES", DATA_E_VALUES)
 DATA_T1_VALUES = _env_float_list("PINN_DATA_T1_VALUES", DATA_T1_VALUES)
