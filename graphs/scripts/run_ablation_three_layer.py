@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 from _common import DATA_DIR, REPO_ROOT
-
-
-MEAN_RE = re.compile(r"Three-layer sweep mean MAE=(?P<mean>[0-9.]+)%")
-WORST_RE = re.compile(r"Three-layer sweep worst MAE=(?P<worst>[0-9.]+)%")
 
 
 def _python() -> str:
@@ -37,19 +33,13 @@ def _run(cmd: list[str], env: dict[str, str], log_path: Path) -> str:
     return proc.stdout
 
 
-def _parse_metrics(output: str) -> tuple[float, float]:
-    mean_m = MEAN_RE.search(output)
-    worst_m = WORST_RE.search(output)
-    if not mean_m or not worst_m:
-        raise ValueError("Could not parse mean/worst MAE from evaluator output.")
-    return float(mean_m.group("mean")), float(worst_m.group("worst"))
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run three-layer PINN ablation variants (FEM-referenced).")
     parser.add_argument("--epochs-soap", type=int, default=None, help="Override PINN_EPOCHS_SOAP for all runs")
     parser.add_argument("--device", default=None, help="Override PINN_DEVICE (cpu/cuda/mps)")
     parser.add_argument("--skip-train", action="store_true", help="Skip training if checkpoint exists for a variant")
+    parser.add_argument("--n-cases", type=int, default=8, help="Random interior evaluation cases per variant")
+    parser.add_argument("--seed", type=int, default=20260415, help="Seed for random interior evaluation")
     args = parser.parse_args()
 
     out_csv = DATA_DIR / "ablation_results.csv"
@@ -65,6 +55,7 @@ def main() -> None:
         "PINN_SUPERVISION_CACHE": "1",
         "PINN_REGEN_SUPERVISION": "0",
     }
+    calibration_path = DATA_DIR / "three_layer_compliance_calibration.json"
     if args.epochs_soap is not None:
         base_env["PINN_EPOCHS_ADAM"] = str(args.epochs_soap)
         base_env["PINN_EPOCHS_SOAP"] = str(args.epochs_soap)
@@ -188,6 +179,8 @@ def main() -> None:
         env["PINN_OUT_DIR"] = str(run_dir)
         env["PINN_EVAL_OUT_DIR"] = str(run_dir / "eval_viz")
         env["PINN_MODEL_PATH"] = str(ckpt_path)
+        if variant_name == "Full framework" and calibration_path.exists():
+            env["PINN_CALIBRATION_JSON"] = str(calibration_path)
 
         print("\n" + "=" * 80)
         print(f"Variant: {variant_name}")
@@ -202,12 +195,29 @@ def main() -> None:
                 log_path=logs_dir / f"{variant_slug}_train.log",
             )
 
-        eval_out = _run(
-            [_python(), "compare_three_layer_pinn_fem.py"],
+        eval_summary = run_dir / "random_interior_generalization_summary.json"
+        eval_csv = run_dir / "random_interior_generalization.csv"
+        _run(
+            [
+                _python(),
+                "scripts/run_random_interior_generalization.py",
+                "--model-path",
+                str(ckpt_path),
+                "--n-cases",
+                str(args.n_cases),
+                "--seed",
+                str(args.seed),
+                "--out-csv",
+                str(eval_csv),
+                "--out-summary",
+                str(eval_summary),
+            ],
             env=env,
             log_path=logs_dir / f"{variant_slug}_eval.log",
         )
-        mean_mae, worst_mae = _parse_metrics(eval_out)
+        summary = json.loads(eval_summary.read_text())
+        mean_mae = float(summary["top_uz_mae_pct_mean"])
+        worst_mae = float(summary["top_uz_mae_pct_worst"])
         print(f"  mean MAE (%):  {mean_mae:.2f}")
         print(f"  worst MAE (%): {worst_mae:.2f}")
 

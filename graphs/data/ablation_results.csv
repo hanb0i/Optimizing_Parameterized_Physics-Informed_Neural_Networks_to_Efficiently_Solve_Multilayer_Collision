@@ -1,7 +1,7 @@
 variant,mean_mae,worst_mae
-Base parametric PINN,18.2200,95.4600
-+ Compliance-aware scaling,16.0800,21.7900
-+ Layerwise PDE decomposition,101.6200,525.6200
-+ Interface continuity enforcement,24.7200,134.4500
-+ Sparse FEM supervision,35.8200,220.1000
-Full framework,9.3500,15.2700
+Base parametric PINN,9.8538,15.0780
++ Compliance-aware scaling,17.0421,18.3578
++ Layerwise PDE decomposition,115.4948,159.5266
++ Interface continuity enforcement,12.0537,23.0993
++ Sparse FEM supervision,31.2826,75.2773
+Full framework,2.8908,3.3090

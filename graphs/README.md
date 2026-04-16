@@ -19,7 +19,8 @@ All figures are written to `graphs/figures/` as both PNG and PDF.
 
 ## Ablation Runner (Generates Real Results)
 
-Run the three-layer ablation sweep (trains and evaluates multiple variants):
+Run the three-layer ablation sweep (trains and evaluates multiple variants on the
+same random-interior FEM-referenced protocol used by the generalization study):
 
 `python3 graphs/scripts/run_ablation_three_layer.py`
 
@@ -35,6 +36,10 @@ Then render the ablation table figure:
 
 Notes:
 
+- `mean_mae` / `worst_mae` are top-surface `u_z` MAE percentages over the
+  random-interior evaluation cases, not the older exhaustive corner sweep.
+- The full-framework row automatically uses
+  `graphs/data/three_layer_compliance_calibration.json` when that artifact is present.
 - The runner sets `PINN_WARM_START=0` by default for fairness.
 - Use `--skip-train` to reuse existing checkpoints.
 - Use `--epochs-soap` and `--device` to control runtime and device.
