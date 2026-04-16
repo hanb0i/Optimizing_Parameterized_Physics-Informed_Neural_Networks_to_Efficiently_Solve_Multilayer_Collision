@@ -5,11 +5,11 @@
     "ne_y": 10,
     "ne_z": 4
   },
-  "fem_seconds_mean": 0.06036383333333333,
-  "fem_seconds_worst": 0.088152,
-  "pinn_eval_seconds_mean": 0.0017134999999999997,
-  "pinn_eval_seconds_worst": 0.004418,
-  "mean_per_case_speedup": 45.701882577993665,
+  "fem_seconds_mean": 0.05837766666666667,
+  "fem_seconds_worst": 0.077537,
+  "pinn_eval_seconds_mean": 0.0013196666666666667,
+  "pinn_eval_seconds_worst": 0.002091,
+  "mean_per_case_speedup": 46.579459537925224,
   "one_time_training_cost": {
     "total_training_seconds": 15081.82,
     "source_log": "/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/graphs/data/ablation_logs/full_framework_train.log"

@@ -1,9 +1,9 @@
 case_id,parameter_region,spatial_region,e1,e2,e3,t1,t2,t3,mae_pct,max_pct,n_points
-supervised_param_extreme,supervised_parameter_grid,bottom_unsupervised_spatial,1,10,10,0.1,0.02,0.02,8.705967,66.642689,121
-supervised_param_extreme,supervised_parameter_grid,interior_unsupervised_spatial,1,10,10,0.1,0.02,0.02,6.028020,62.636146,363
-supervised_param_extreme,supervised_parameter_grid,interface_sparse_focus,1,10,10,0.1,0.02,0.02,3.883080,58.545797,242
-supervised_param_extreme,supervised_parameter_grid,top_surface_sparse_focus,1,10,10,0.1,0.02,0.02,4.401969,49.937588,121
-random_interior_000,unsupervised_random_parameter,bottom_unsupervised_spatial,7.4620459,5.4694568,9.2977577,0.054781324,0.031180696,0.028459079,5.298539,42.900304,121
-random_interior_000,unsupervised_random_parameter,interior_unsupervised_spatial,7.4620459,5.4694568,9.2977577,0.054781324,0.031180696,0.028459079,3.285195,39.100341,363
-random_interior_000,unsupervised_random_parameter,interface_sparse_focus,7.4620459,5.4694568,9.2977577,0.054781324,0.031180696,0.028459079,2.678730,30.806370,242
-random_interior_000,unsupervised_random_parameter,top_surface_sparse_focus,7.4620459,5.4694568,9.2977577,0.054781324,0.031180696,0.028459079,3.871637,17.063013,121
+supervised_param_extreme,supervised_parameter_grid,bottom_unsupervised_spatial,1,10,10,0.1,0.02,0.02,6.317621,40.805732,121
+supervised_param_extreme,supervised_parameter_grid,interior_unsupervised_spatial,1,10,10,0.1,0.02,0.02,4.249530,42.464881,363
+supervised_param_extreme,supervised_parameter_grid,interface_sparse_focus,1,10,10,0.1,0.02,0.02,2.767572,44.060389,242
+supervised_param_extreme,supervised_parameter_grid,top_surface_sparse_focus,1,10,10,0.1,0.02,0.02,3.702405,43.577846,121
+random_interior_000,unsupervised_random_parameter,bottom_unsupervised_spatial,7.4620459,5.4694568,9.2977577,0.054781324,0.031180696,0.028459079,4.038950,21.438260,121
+random_interior_000,unsupervised_random_parameter,interior_unsupervised_spatial,7.4620459,5.4694568,9.2977577,0.054781324,0.031180696,0.028459079,2.464641,20.224290,363
+random_interior_000,unsupervised_random_parameter,interface_sparse_focus,7.4620459,5.4694568,9.2977577,0.054781324,0.031180696,0.028459079,2.233881,19.442038,242
+random_interior_000,unsupervised_random_parameter,top_surface_sparse_focus,7.4620459,5.4694568,9.2977577,0.054781324,0.031180696,0.028459079,3.742913,18.427391,121

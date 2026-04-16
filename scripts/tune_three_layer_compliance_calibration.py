@@ -91,24 +91,35 @@ def _metrics(prepared: list[dict], params: np.ndarray, coeffs: np.ndarray | None
     }
 
 
-def _fit_feature_coefficients(prepared: list[dict], params: np.ndarray, ridge: float) -> np.ndarray:
+def _fit_feature_coefficients(prepared: list[dict], params: np.ndarray, ridge: float, fit_scope: str) -> np.ndarray:
     feat_rows = []
     targets = []
     weights = []
     for blob in prepared:
         u_base = _predict(blob, params, None)
         u_ref = blob["u_fem"]
-        top = blob["top_mask"]
-        pred = u_base[top, 2]
-        ref = u_ref[top, 2]
+        if fit_scope == "top":
+            mask = blob["top_mask"]
+        elif fit_scope == "uz":
+            mask = np.ones(len(blob["pts"]), dtype=bool)
+        else:
+            raise ValueError(f"Unknown fit scope: {fit_scope}")
+        pred = u_base[mask, 2]
+        ref = u_ref[mask, 2]
         good = (np.abs(pred) > 1e-10) & (np.abs(ref) > 1e-10) & (np.sign(pred) == np.sign(ref))
         if not np.any(good):
             continue
-        feats = calibration_features(blob["pts"][top])[good]
+        feats = calibration_features(blob["pts"][mask])[good]
         ratio = np.clip(ref[good] / pred[good], 0.2, 5.0)
         feat_rows.append(feats)
         targets.append(np.log(ratio).reshape(-1, 1))
-        weights.append((np.abs(ref[good]) / max(float(np.max(np.abs(ref))), 1e-12)).reshape(-1, 1) + 0.1)
+        z_hat = blob["pts"][mask][good, 2:3] / np.clip(
+            blob["pts"][mask][good, 4:5] + blob["pts"][mask][good, 6:7] + blob["pts"][mask][good, 8:9],
+            1e-8,
+            None,
+        )
+        top_boost = 1.0 + 2.0 * (z_hat > 0.9).astype(float)
+        weights.append(((np.abs(ref[good]).reshape(-1, 1) / max(float(np.max(np.abs(ref))), 1e-12)) + 0.1) * top_boost)
 
     x_mat = np.vstack(feat_rows)
     y_vec = np.vstack(targets)
@@ -133,6 +144,7 @@ def main() -> None:
     parser.add_argument("--ne-y", type=int, default=8)
     parser.add_argument("--ne-z", type=int, default=4)
     parser.add_argument("--ridge", type=float, default=1e-2)
+    parser.add_argument("--fit-scope", choices=["top", "uz"], default="uz")
     parser.add_argument("--optimize-coefficients", action="store_true")
     parser.add_argument("--maxiter", type=int, default=600)
     parser.add_argument("--out", default=str(GRAPHS_DATA_DIR / "three_layer_compliance_calibration.json"))
@@ -145,6 +157,8 @@ def main() -> None:
     random_cases = random_interior_cases(args.n_calibration + args.n_holdout, args.seed)
     calibration_cases = [
         ThreeLayerCase("supervised_soft_bottom", 1.0, 10.0, 10.0, 0.10, 0.02, 0.02),
+        ThreeLayerCase("supervised_soft_bottom_repeat1", 1.0, 10.0, 10.0, 0.10, 0.02, 0.02),
+        ThreeLayerCase("supervised_soft_bottom_repeat2", 1.0, 10.0, 10.0, 0.10, 0.02, 0.02),
         ThreeLayerCase("supervised_soft_middle", 10.0, 1.0, 10.0, 0.02, 0.10, 0.02),
         ThreeLayerCase("supervised_soft_top", 10.0, 10.0, 1.0, 0.02, 0.02, 0.10),
         *random_cases[: args.n_calibration],
@@ -162,7 +176,7 @@ def main() -> None:
         ],
         dtype=float,
     )
-    coeffs = _fit_feature_coefficients(calibration, params, args.ridge)
+    coeffs = _fit_feature_coefficients(calibration, params, args.ridge, args.fit_scope)
     if args.optimize_coefficients:
         def objective(c: np.ndarray) -> float:
             m = _metrics(calibration, params, c)
@@ -211,6 +225,7 @@ def main() -> None:
         ],
         "feature_coefficients": [float(v) for v in coeffs],
         "log_multiplier_clip": 1.5,
+        "fit_scope": args.fit_scope,
         "calibration_metrics_uncalibrated": _metrics(calibration, params, None),
         "calibration_metrics_tuned": _metrics(calibration, params, coeffs),
         "holdout_metrics_uncalibrated": _metrics(holdout, params, None) if holdout else None,

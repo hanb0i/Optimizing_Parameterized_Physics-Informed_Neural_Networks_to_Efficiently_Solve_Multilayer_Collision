@@ -7,10 +7,10 @@
     "ne_y": 8,
     "ne_z": 4
   },
-  "top_uz_mae_pct_mean": 3.63256275,
-  "top_uz_mae_pct_worst": 4.713555,
-  "volume_mae_pct_mean": 2.9910309999999996,
-  "volume_mae_pct_worst": 3.396645,
+  "top_uz_mae_pct_mean": 2.890803125,
+  "top_uz_mae_pct_worst": 3.309029,
+  "volume_mae_pct_mean": 2.4379299999999997,
+  "volume_mae_pct_worst": 2.94309,
   "all_top_cases_below_5_pct": true,
   "all_volume_cases_below_5_pct": true
 }
