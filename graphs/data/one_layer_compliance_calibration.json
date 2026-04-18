@@ -11,40 +11,40 @@
     "PINN_THICKNESS_COMPLIANCE_ALPHA": 1.234
   },
   "tuned_params": {
-    "PINN_DISPLACEMENT_COMPLIANCE_SCALE": 0.736047222555992,
-    "PINN_E_COMPLIANCE_POWER": 0.9743923854303291,
-    "PINN_THICKNESS_COMPLIANCE_ALPHA": 0.5784390617125159
+    "PINN_DISPLACEMENT_COMPLIANCE_SCALE": 0.7360429019668411,
+    "PINN_E_COMPLIANCE_POWER": 0.9743937316337181,
+    "PINN_THICKNESS_COMPLIANCE_ALPHA": 0.5784595573516915
   },
   "calibration_metrics_initial": {
-    "top_mae_pct_mean": 12.835639948174332,
-    "top_mae_pct_worst": 25.06883083198084,
-    "volume_mae_pct_mean": 4.713086906296809,
-    "volume_mae_pct_worst": 8.660829115631584,
-    "top_max_pct_worst": 114.00467757689732,
+    "top_mae_pct_mean": 12.83564263372102,
+    "top_mae_pct_worst": 25.068832186187283,
+    "volume_mae_pct_mean": 4.713087439024147,
+    "volume_mae_pct_worst": 8.660829241562148,
+    "top_max_pct_worst": 114.00466412899729,
     "all_top_cases_below_5_pct": false
   },
   "calibration_metrics_tuned": {
-    "top_mae_pct_mean": 1.5302683355846387,
-    "top_mae_pct_worst": 1.563993960629862,
-    "volume_mae_pct_mean": 1.080957080452935,
-    "volume_mae_pct_worst": 1.3200994050769435,
-    "top_max_pct_worst": 15.253071102015863,
+    "top_mae_pct_mean": 1.5302920137373788,
+    "top_mae_pct_worst": 1.5640583935855814,
+    "volume_mae_pct_mean": 1.0809681945261709,
+    "volume_mae_pct_worst": 1.3200363475517545,
+    "top_max_pct_worst": 15.252771685144019,
     "all_top_cases_below_5_pct": true
   },
   "holdout_metrics_initial": {
-    "top_mae_pct_mean": 11.280136738038543,
-    "top_mae_pct_worst": 21.1554984901107,
-    "volume_mae_pct_mean": 4.257942290653713,
-    "volume_mae_pct_worst": 7.350894541878182,
-    "top_max_pct_worst": 90.61202509162544,
+    "top_mae_pct_mean": 11.280138469270653,
+    "top_mae_pct_worst": 21.155498500807006,
+    "volume_mae_pct_mean": 4.257942571902522,
+    "volume_mae_pct_worst": 7.350893936762522,
+    "top_max_pct_worst": 90.6120250917361,
     "all_top_cases_below_5_pct": false
   },
   "holdout_metrics_tuned": {
-    "top_mae_pct_mean": 1.9078835121958653,
-    "top_mae_pct_worst": 2.7444567634881825,
-    "volume_mae_pct_mean": 1.2331287488593496,
-    "volume_mae_pct_worst": 1.6283193681684935,
-    "top_max_pct_worst": 12.399179970470474,
+    "top_mae_pct_mean": 1.9077310607891749,
+    "top_mae_pct_worst": 2.7441464970642593,
+    "volume_mae_pct_mean": 1.2330798089344301,
+    "volume_mae_pct_worst": 1.6282190106821561,
+    "top_max_pct_worst": 12.39904746943042,
     "all_top_cases_below_5_pct": true
   },
   "note": "This tunes only the existing PINN compliance map. The PINN remains the solver; FEM is the reference."
