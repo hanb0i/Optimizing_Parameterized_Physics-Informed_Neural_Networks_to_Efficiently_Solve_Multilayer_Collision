@@ -1,5 +1,5 @@
 {
-  "model_path": "/Users/hanbosong/GitHub/Basic-PiNN-Model-For-Three-Layered-Collision/one-layer-workflow/pinn_model.pth",
+  "model_path": "one-layer-workflow/pinn_model.pth",
   "seed": 20260415,
   "n_cases": 8,
   "mesh": {
