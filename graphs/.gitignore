@@ -40,6 +40,18 @@ data/*
 !figures/unsupervised_region_supervised_param_extreme.png
 !figures/one_layer_unsupervised_region_one_layer_random_000.png
 !figures/one_layer_unsupervised_region_one_layer_supervised_param_mid.png
+!figures/fig_3l_top.png
+!figures/fig_3l_top.pdf
+!figures/fig_3l_cross.png
+!figures/fig_3l_cross.pdf
+!figures/fig_3l_errors.png
+!figures/fig_3l_errors.pdf
+!figures/fig_1l_top.png
+!figures/fig_1l_top.pdf
+!figures/fig_1l_cross.png
+!figures/fig_1l_cross.pdf
+!figures/fig_1l_errors.png
+!figures/fig_1l_errors.pdf
 
 # Paper-support data selected for commit
 !data/ablation_results.csv

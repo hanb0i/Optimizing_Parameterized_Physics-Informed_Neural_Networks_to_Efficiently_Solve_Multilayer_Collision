@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-PINN_WORKFLOW_DIR = os.path.join(REPO_ROOT, "pinn-workflow")
+PINN_WORKFLOW_DIR = os.path.join(REPO_ROOT, "three-layer-workflow")
 if not os.path.exists(PINN_WORKFLOW_DIR):
     PINN_WORKFLOW_DIR = os.path.join(REPO_ROOT, "three-layer-workflow")
 FEA_SOLVER_DIR = os.path.join(REPO_ROOT, "fea-workflow", "solver")

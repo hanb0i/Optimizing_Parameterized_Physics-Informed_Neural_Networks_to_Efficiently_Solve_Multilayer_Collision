@@ -1,25 +1,29 @@
 {
-  "model_path": "graphs/data/ablation_runs/full_framework/pinn_model.pth",
+  "model_path": "pinn-workflow/pinn_model.pth",
   "mesh": {
-    "ne_x": 10,
-    "ne_y": 10,
-    "ne_z": 4
+    "ne_x": 16,
+    "ne_y": 16,
+    "ne_z": 8
   },
-  "fem_seconds_mean": 0.05837766666666667,
-  "fem_seconds_worst": 0.077537,
-  "pinn_eval_seconds_mean": 0.0013196666666666667,
-  "pinn_eval_seconds_worst": 0.002091,
-  "mean_per_case_speedup": 46.579459537925224,
+  "fem_seconds_mean": 0.44161764500000006,
+  "fem_seconds_worst": 0.581027,
+  "fem_repeats_measured": 200,
+  "estimated_fem_seconds_for_1e6_configs": 441617.6450000001,
+  "pinn_eval_seconds_mean": 0.00296666,
+  "pinn_eval_seconds_worst": 0.008795,
+  "estimated_pinn_inference_seconds_for_1e6_configs": 2966.66,
+  "mean_per_case_speedup": 158.62857350092742,
   "one_time_training_cost": {
-    "total_training_seconds": 15081.82,
-    "source_log": "/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/graphs/data/ablation_logs/full_framework_train.log"
+    "total_training_seconds": 94.3,
+    "source_log": "/Users/hanbosong/GitHub/Basic-PiNN-Model-For-Three-Layered-Collision/graphs/data/ablation_logs/full_framework_train.log"
   },
+  "estimated_pinn_total_seconds_for_1e6_configs_including_training_if_known": 3060.96,
   "per_case_evaluation_cost_note": "PINN evaluation time excludes one-time training; FEM time is per solved case.",
   "sparse_vs_fuller_supervision": {
     "supervision_cases": 64,
-    "mesh_nodes_per_case": 605,
+    "mesh_nodes_per_case": 2601,
     "sparse_supervision_points": 36000,
-    "fuller_supervision_points_same_mesh": 38720,
-    "sparse_fraction_of_fuller_same_mesh": 0.9297520661157025
+    "fuller_supervision_points_same_mesh": 166464,
+    "sparse_fraction_of_fuller_same_mesh": 0.21626297577854672
   }
 }

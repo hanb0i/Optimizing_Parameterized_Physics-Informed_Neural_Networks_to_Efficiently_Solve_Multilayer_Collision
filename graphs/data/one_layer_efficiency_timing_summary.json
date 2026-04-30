@@ -1,18 +1,22 @@
 {
-  "model_path": "one-layer-workflow/pinn_model.pth",
+  "model_path": "/Users/hanbosong/GitHub/Basic-PiNN-Model-For-Three-Layered-Collision/one-layer-workflow/pinn_model.pth",
   "mesh": {
-    "ne_x": 10,
-    "ne_y": 10,
-    "ne_z": 4
+    "ne_x": 16,
+    "ne_y": 16,
+    "ne_z": 8
   },
-  "fem_seconds_mean": 0.04342883333333333,
-  "fem_seconds_worst": 0.049668,
-  "pinn_eval_seconds_mean": 0.0008853333333333335,
-  "pinn_eval_seconds_worst": 0.00155,
-  "mean_per_case_speedup": 52.151124611611486,
+  "fem_seconds_mean": 0.47359655000000006,
+  "fem_seconds_worst": 0.659955,
+  "fem_repeats_measured": 200,
+  "estimated_fem_seconds_for_1e6_configs": 473596.55000000005,
+  "pinn_eval_seconds_mean": 0.0025148899999999997,
+  "pinn_eval_seconds_worst": 0.009862,
+  "estimated_pinn_inference_seconds_for_1e6_configs": 2514.89,
+  "mean_per_case_speedup": 200.4621045595987,
   "one_time_training_cost": {
     "note": "No one-time training timing artifact found for this checkpoint."
   },
+  "estimated_pinn_total_seconds_for_1e6_configs_including_training_if_known": 2514.89,
   "per_case_evaluation_cost_note": "PINN evaluation time excludes one-time training; FEM time is per solved case.",
   "sparse_vs_fuller_supervision": {
     "supervision_cases": 9,
